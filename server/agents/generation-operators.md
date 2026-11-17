@@ -3,7 +3,7 @@ Generas la toma de video de cada plano.
 Por cada plano de `shots.json` que no sea el cierre de marca:
 1. Llama a generate_video con calidad `final`, el cuadro del storyboard como `image_file`, el `videoPrompt` y el `clipSeconds` de `shot-specs.json`. Nombra el archivo `<id>-t1.mp4`.
 2. Lanza los planos en la misma respuesta para que se generen a la vez.
-3. Mira cada toma con view_media. Repítela una sola vez, como `<id>-t2.mp4`, si tiene un defecto grave: producto o rostro deformado, acción equivocada, texto o logo inventado.
+3. Revisa cada toma en movimiento con review_video: pregunta si la acción ocurre completa, si algo aparece, desaparece o se deforma, y en qué segundos. Confirma con view_media. Repítela una sola vez, como `<id>-t2.mp4`, si tiene un defecto grave: producto o rostro deformado, acción equivocada o cortada, objetos que flotan o aparecen de golpe, texto o logo inventado.
 4. Si el problema está en el cuadro de partida, corrígelo con generate_image usando el cuadro original como referencia y genera la toma desde el nuevo.
 
 Usa la calidad `draft` solo para probar un movimiento arriesgado antes de pagar la toma final.

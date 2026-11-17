@@ -41,7 +41,7 @@ Requiere **ffmpeg** instalado (`brew install ffmpeg`), también en simulación.
 
 ## Agentes reales
 
-1. Define `ANTHROPIC_API_KEY`, `FAL_KEY` y `ELEVENLABS_API_KEY` en `.env` y reinicia `npm run dev`.
+1. Define `ANTHROPIC_API_KEY`, `FAL_KEY`, `ELEVENLABS_API_KEY` y `GEMINI_API_KEY` en `.env` y reinicia `npm run dev`.
 2. En Configuración, apaga el modo simulación.
 3. Crea el proyecto con un tope de presupuesto bajo.
 
@@ -55,6 +55,7 @@ Cada agente llama entonces a Claude Sonnet 5.5 y genera de verdad. Todo el gasto
 | Tomas de video | fal.ai, Kling 2.6 Pro, a partir del cuadro del storyboard | 0.07 USD por segundo |
 | Pruebas de movimiento | fal.ai, PixVerse V6 a 360p | 0.025 USD por segundo |
 | Voz, música y efectos | ElevenLabs | Por caracteres y por minuto |
+| Revisión de video en movimiento | Gemini 3.8 Flash | 1 a 3 centavos por consulta |
 | Corte, color, mezcla, máster y versiones | ffmpeg en el servidor | Sin costo |
 | Cierre de marca y textos en pantalla | Remotion en el servidor | Sin costo |
 
@@ -65,6 +66,8 @@ Los modelos y las tarifas están en `server/media/prices.ts`. El costo se estima
 - **Rehacer un plano.** Una versión nueva de un agente parte de una copia de la anterior, así que rehace solo lo que le devolvieron.
 - **Procedencia.** Cada archivo generado o montado queda en la tabla `assets` con herramienta, modelo, prompt, costo, licencia y medidas técnicas. Los auditores miden los archivos, no se fían de los informes.
 - **Música.** ElevenLabs no la permite en el plan gratuito, que además no da licencia comercial. Sin plan de pago, la pieza sale sin música y el informe de procedencia lo avisa.
+- **Revisión en movimiento.** Claude solo ve cuadros sueltos. Para juzgar un corte o una toma, los agentes y los auditores piden a Gemini que mire el video completo y luego confirman el instante por su cuenta.
+- **Volver atrás.** Desde una aprobación se puede devolver trabajo a un agente de una etapa anterior; lo posterior se actualiza a partir de lo ya entregado.
 - **Remotion.** Es gratis para empresas de hasta 3 personas. Con 4 o más hace falta su licencia de empresa.
 - **Primer render.** La primera vez que se renderiza un cierre, Remotion descarga un navegador de unos 140 MB.
 

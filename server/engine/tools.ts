@@ -5,6 +5,7 @@ import { extname, join } from 'node:path'
 import { z } from 'zod'
 import * as eleven from '../media/eleven.ts'
 import * as fal from '../media/fal.ts'
+import { MAX_REVIEW_BYTES, reviewVideo } from '../media/gemini.ts'
 import * as ff from '../media/ffmpeg.ts'
 import { MODELS } from '../media/prices.ts'
 import { renderEndCard, renderSuper } from '../media/remotion.ts'
@@ -138,6 +139,30 @@ export function mediaTools(ctx: ToolContext) {
       return [{ type: 'text', text: text + shown }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: (await readFile(sheet)).toString('base64') } }]
     }),
   ]
+
+  tools.push(tool('review_video', 'Pide a un modelo que sí ve video en movimiento (y oye su audio) que revise un clip y conteste una pregunta concreta, con tiempos. Úsala para lo que no se ve en cuadros sueltos: cortes que saltan, objetos que aparecen o desaparecen de golpe, parpadeos, deformaciones que duran un instante, continuidad entre planos y sincronía de voz e imagen. Cuesta entre 1 y 3 centavos por consulta. Es una segunda opinión: confirma lo que te diga mirando el instante con view_media antes de darlo por cierto.', z.object({
+    path,
+    question: z.string().min(15).max(2000).describe('Qué debe comprobar, con el contexto necesario: qué muestra el plano, qué debería pasar y en qué tramo fijarse.'),
+    from_seconds: seconds(600).optional().describe('Para revisar solo un tramo: su inicio.'),
+    to_seconds: seconds(600).optional().describe('Para revisar solo un tramo: su final.'),
+  }), async (input, tmp) => {
+    if (kindOf(input.path) !== 'video') throw new Error('review_video es para video; las imágenes y el audio se revisan con view_media')
+    if (input.from_seconds !== undefined && input.to_seconds !== undefined && input.to_seconds <= input.from_seconds) throw new Error('el tramo termina antes de empezar')
+    const estimate = 0.03
+    if (estimate > ctx.budgetLeft() - reserved) return 'Error: no queda presupuesto para una revisión de video. Revisa con view_media y dilo en tu entrega.'
+    const bytes = await ctx.files.readBytes(resolve(input.path))
+    if (!bytes) throw new Error(`no existe el archivo ${input.path}`)
+    if (bytes.length > MAX_REVIEW_BYTES) throw new Error(`el archivo pesa ${Math.round(bytes.length / 1048576)} MB y la revisión admite hasta ${MAX_REVIEW_BYTES / 1048576} MB. Revísalo por tramos con view_media`)
+    reserved += estimate
+    try {
+      // Diez cuadros por segundo: lo justo para ver un defecto que dura dos o tres cuadros.
+      const r = await reviewVideo({ bytes, question: `${input.question}\n\nResponde en español, con tiempos en segundos y décimas. Si no ves ningún problema, dilo sin inventar uno.`, fps: 10, startSeconds: input.from_seconds, endSeconds: input.to_seconds })
+      await ctx.spend(r.costUsd)
+      return `Revisión de ${input.path} hecha por ${r.model} ($${r.costUsd.toFixed(3)}):\n${r.text}`
+    } finally {
+      reserved -= estimate
+    }
+  }))
 
   if (has('provenance') || !ctx.dir) tools.push(tool('list_provenance', 'Lista todos los archivos generados o montados en el proyecto, con herramienta, modelo, prompt, licencia, costo y medidas técnicas.', z.object({}), async () => JSON.stringify(await ctx.assets(), null, 1)))
 
@@ -314,6 +339,7 @@ export function mediaTools(ctx: ToolContext) {
 
 const SAY: Record<string, (i: any) => string> = {
   view_media: (i) => `Mirando ${i.path}${i.at_seconds !== undefined ? ` en el segundo ${i.at_seconds}` : ''}`,
+  review_video: (i) => `Pidiendo una revisión en movimiento de ${i.path}`,
   list_provenance: () => 'Revisando la procedencia de los archivos',
   generate_image: (i) => `Generando la imagen ${i.filename}`,
   generate_video: (i) => `Generando el video ${i.filename} (${i.quality === 'final' ? 'toma final' : 'prueba'}, ${i.duration_seconds} s)`,

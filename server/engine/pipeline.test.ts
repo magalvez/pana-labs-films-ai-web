@@ -411,3 +411,28 @@ test('desde un gate se puede devolver trabajo a una etapa anterior y lo posterio
   assert.deepEqual(runs, commercial.stages[1].agents.map((a) => `${a.id} v2`))
   assert.deepEqual([p.status, p.currentStage], ['waiting_human', 'preproduction'])
 })
+
+test('a un agente devuelto que termina sin cambiar nada se le avisa una vez', async () => {
+  const feedbacks: (string | null)[] = []
+  let rejected = false
+  const base = simRunner()
+  // Un agente real que dice haber corregido pero no toca ningún archivo: su traspaso llega con `changed` vacío.
+  const lazy: Runner = {
+    runAuditor: async (run) => (rejected ? base.runAuditor(run) : ((rejected = true), { approved: false, costUsd: 0, issues: [{ agent: 'story-architect', problem: 'El guion dura 40 s' }] })),
+    runAgent: async (run) => {
+      const result = await base.runAgent(run)
+      if (run.agent.id !== 'story-architect' || run.version === 1) return result
+      feedbacks.push(run.feedback)
+      const path = `${run.dir}/handoff.json`
+      const handoff = JSON.parse((await run.files.read(path))!)
+      await run.files.write(path, JSON.stringify({ ...handoff, changed: feedbacks.length === 1 ? [] : ['script.md'] }))
+      return result
+    },
+  }
+  const { engine } = await setup(lazy)
+  const id = await start(engine)
+  assert.equal(feedbacks.length, 2)
+  assert.equal(feedbacks[0], 'El guion dura 40 s')
+  assert.match(feedbacks[1]!, /terminaste sin escribir ni generar ningún archivo/)
+  assert.equal((await engine.getProject(id)).status, 'waiting_human')
+})

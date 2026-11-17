@@ -26,6 +26,9 @@ export async function checkContract(files: Files, dir: string, agent: AgentDef):
   return null
 }
 
+/** Así empieza la indicación que recibe un agente cuando lo que cambió fue el trabajo de otro, anterior al suyo. */
+const CASCADE = 'Se devolvió trabajo anterior al tuyo'
+
 export function createEngine(opts: {
   db: Db
   files: Files
@@ -171,6 +174,16 @@ export function createEngine(opts: {
     }
   }
 
+  /** El traspaso de un agente real dice qué archivos tocó en esa ejecución. El simulado no lo dice y no se le exige. */
+  async function unchanged(dir: string) {
+    try {
+      const { changed } = JSON.parse((await files.read(`${dir}/handoff.json`)) ?? '')
+      return Array.isArray(changed) && changed.length === 0
+    } catch {
+      return false
+    }
+  }
+
   async function runStep(p: Project, scheme: Scheme, stage: StageDef, agent: AgentDef, latest: Map<string, StepRow>) {
     const prev = latest.get(`${stage.id}/${agent.id}`)
     const version = (prev?.version ?? 0) + 1
@@ -179,6 +192,7 @@ export function createEngine(opts: {
     const to = next?.id ?? stage.auditor.id
     const brand = await brandOf(p)
     let model = ''
+    let nudged = false
     let feedback = prev?.feedback ?? null
     for (let attempt = 0; ; attempt++) {
       await Promise.all([attempt === 0 ? prepareDir(p.id, stage.id, agent.id, version, dir) : null, emit(p.id, 'agent.started', { stage: stage.id, agent: agent.id, version, feedback })])
@@ -195,7 +209,13 @@ export function createEngine(opts: {
       })
       model = result.model
       await addCost(p.id, stage.id, agent.id, result.costUsd)
-      const problem = await checkContract(files, dir, agent)
+      let problem = await checkContract(files, dir, agent)
+      // Como una versión nueva parte de la copia de la anterior, un agente puede darla por corregida sin tocar nada
+      // y el contrato no lo nota. Se le avisa una vez; si insiste en que no hay nada que cambiar, se acepta y lo juzga el auditor.
+      if (!problem && !nudged && prev?.feedback && !prev.feedback.startsWith(CASCADE) && (await unchanged(dir))) {
+        nudged = true
+        problem = 'te devolvieron el trabajo y terminaste sin escribir ni generar ningún archivo: tus entregables siguen siendo los de la versión anterior. Reescribe los que deban cambiar, o explica en tu resumen por qué ninguno cambia'
+      }
       if (!problem) break
       await emit(p.id, 'contract.failed', { stage: stage.id, agent: agent.id, version, problem })
       if (attempt >= maxContractRetries) throw new Error(`${agent.name} no cumplió el contrato de entrega: ${problem}`)
@@ -362,7 +382,7 @@ export function createEngine(opts: {
       // Dentro de la etapa actual la persona elige exactamente quién repite. El arrastre a los demás
       // solo ocurre cuando se reabre una etapa anterior, porque entonces cambia la base de todo lo posterior.
       if (!direct && !reopensEarlier) continue
-      await sendBack(id, o.stage, [o.agent.id], direct ? comment : `Se devolvió trabajo anterior al tuyo (${names}) con esta indicación: ${comment}\nRevisa lo que entreguen de nuevo y actualiza tu entrega solo en lo que dependa de ello. Lo demás se conserva.`)
+      await sendBack(id, o.stage, [o.agent.id], direct ? comment : `${CASCADE} (${names}) con esta indicación: ${comment}\nRevisa lo que entreguen de nuevo y actualiza tu entrega solo en lo que dependa de ello. Lo demás se conserva.`)
       reopened.add(o.stage)
     }
     for (const s of reopened) await setStage(id, s.id, 'working', 0)

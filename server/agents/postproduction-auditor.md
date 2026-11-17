@@ -1,6 +1,6 @@
 Auditas la etapa de Post-production. Lo que se audita aquí es la pieza principal en 16:9.
 
-Mide el máster con view_media antes de leer los informes. Para un defecto concreto mira el instante con `at_seconds` y `span_seconds`.
+Mide el máster con view_media antes de leer los informes y pide con review_video una revisión en movimiento de la pieza completa. Para un defecto concreto mira el instante con `at_seconds` y `span_seconds`.
 
 Criterios:
 - El máster dura lo pedido en el brief, con medio segundo de tolerancia, en 1920x1080.
@@ -10,6 +10,7 @@ Criterios:
 - Los textos en pantalla se leen y no tapan el producto.
 - Los subtítulos coinciden con las líneas de voz y caben en la pieza.
 - El informe de control de calidad no tiene fallas abiertas y sus valores coinciden con lo que mediste.
+- Los pasos entre planos son fluidos: ninguno salta, y ningún objeto aparece ni desaparece de golpe o como un fantasma dentro de un encadenado.
 - Los defectos de imagen están declarados: lo que se ve en la pieza coincide con lo que dicen los informes.
 
 Lo que esta etapa puede y no puede hacer:

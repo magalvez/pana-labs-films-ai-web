@@ -19,6 +19,7 @@ const RULES = `Reglas de trabajo:
 - No inventes datos del cliente. Lo que el brief no diga, márcalo como supuesto.
 - Las imágenes, el video y el audio solo existen si una herramienta te confirmó que los guardó. No afirmes haber generado nada que una herramienta no haya confirmado, y cita los archivos por la ruta que te devolvió.
 - El logo, el empaque y los textos de marca nunca se generan con IA. El producto se mantiene fiel usando las fotos reales del cliente como referencia; el logo solo entra en el cierre de marca.
+- Un video es movimiento: lo que ves con view_media son cuadros sueltos. Para juzgar una toma o un corte, pide una revisión en movimiento con review_video y luego confirma el instante con view_media.
 - Generar cuesta dinero del cliente. Genera lo necesario, mira el resultado con view_media antes de darlo por bueno y repite solo lo que de verdad falló.
 - Si una herramienta devuelve un error, léelo y decide: corrige la petición, busca otra forma o deja constancia en tu entregable de lo que no se pudo hacer.
 - Escribe en español. Los nombres de agentes y términos de oficio pueden ir en inglés.`
@@ -100,6 +101,8 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
   return {
     async runAgent({ project, stage, agent, version, dir, files, brand, inputs, feedback, to, say, spend, record, assets, signal }: AgentRun) {
       const written = new Set<string>()
+      // Lo que el agente escribió o generó en esta ejecución, sin contar lo que heredó de la versión anterior.
+      const changed = new Set<string>()
       // Lo gastado por este agente hasta ahora, entre Claude y herramientas, para no pasar el tope a mitad de trabajo.
       let used = 0
       const stop: Stop = { controller: new AbortController() }
@@ -107,7 +110,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
         projectId: project.id, dir, families: agent.tools ?? [], files, brand, brandName: brand?.name ?? project.name, record, assets,
         budgetLeft: () => project.budget_cap - project.spent - used,
         spend: async (usd) => { used += usd; await spend(usd) },
-        wrote: (name) => void written.add(name),
+        wrote: (name) => { written.add(name); changed.add(name) },
         abort: (err) => { stop.error = err; stop.controller.abort() },
       })
       const writeTool = betaZodTool({
@@ -119,6 +122,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
           if (name.endsWith('.json')) try { JSON.parse(content) } catch { return 'Error: el contenido no es JSON válido. Corrígelo y vuelve a escribir.' }
           await files.write(`${dir}/${name}`, content)
           written.add(name)
+          changed.add(name)
           return `Guardado ${name}.`
         },
       })
@@ -132,16 +136,18 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}.\n${PRICE_LIST}\n\nEntregables previos disponibles:\n${await describe(files, project.id, inputs)}\n\nTu carpeta de trabajo es ${rel}/. Tus entregables: ${agent.deliverables.join(', ')}.${redo}`
       const { text } = await loop(system, prompt, [readTool(files, project.id), writeTool, ...media], say, agent.tools?.length ? mediaTimeoutMs : timeoutMs, stop, signal, async (usd) => { used += usd; await spend(usd) })
       // El resumen del traspaso lo escribe el motor a partir de la respuesta final del agente.
-      await files.write(`${dir}/handoff.json`, JSON.stringify({ agent: agent.id, stage: stage.id, version, to, summary: text || `${agent.name} entregó sin resumen.`, files: [...written] }, null, 2))
+      await files.write(`${dir}/handoff.json`, JSON.stringify({ agent: agent.id, stage: stage.id, version, to, summary: text || `${agent.name} entregó sin resumen.`, files: [...written], changed: [...changed] }, null, 2))
       return { costUsd: 0, model: MODEL }
     },
 
     async runAuditor({ project, stage, deliverables, files, brand, say, assets, spend, signal }: AuditRun): Promise<Verdict> {
       const stop: Stop = { controller: new AbortController() }
+      let used = 0
       // El auditor mira y mide los archivos, y consulta su procedencia. No genera nada.
       const media = mediaTools({
         projectId: project.id, dir: null, families: [], files, brand, brandName: brand?.name ?? project.name, assets,
-        budgetLeft: () => 0, spend: async () => {}, record: async () => {}, wrote: () => {},
+        // El auditor no genera, pero sí puede pedir una revisión de video, que cuesta centavos.
+        budgetLeft: () => project.budget_cap - project.spent - used, spend: async (usd) => { used += usd; await spend(usd) }, record: async () => {}, wrote: () => {},
         abort: (err) => { stop.error = err; stop.controller.abort() },
       })
       const ids = stage.agents.map((a) => a.id)
@@ -161,12 +167,13 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       })
       // El auditor recibe brief, criterios y entregables. Nunca el razonamiento de los agentes auditados.
       const system = `Eres ${stage.auditor.name} de Pana Films Lab. Tu trabajo es impedir que un error avance a la siguiente etapa.\n\n${role(stage.auditor.id)}\nCómo auditar:\n- Lee todos los entregables de la etapa con read_file, y la Story Bible si existe.
-- Los archivos de imagen, video y audio míralos con view_media: comprueba lo que se ve y sus medidas técnicas, no lo que dice el agente. Usa list_provenance para ver con qué modelo y licencia se hizo cada uno.\n- Comprueba cada criterio contra lo que dicen los archivos, no contra los resúmenes.\n- Rechaza solo por incumplimientos concretos de los criterios. No rechaces por gusto.\n- Si rechazas, señala al agente responsable y di exactamente qué debe corregir.
+- Los archivos de imagen, video y audio míralos con view_media: comprueba lo que se ve y sus medidas técnicas, no lo que dice el agente.
+- Un video no se juzga por cuadros sueltos. Antes de aprobar una toma o una pieza montada, pide con review_video una revisión en movimiento y pregunta por lo que los cuadros no muestran: cortes que saltan, objetos que aparecen o desaparecen de golpe, parpadeos y continuidad entre planos. Usa list_provenance para ver con qué modelo y licencia se hizo cada uno.\n- Comprueba cada criterio contra lo que dicen los archivos, no contra los resúmenes.\n- Rechaza solo por incumplimientos concretos de los criterios. No rechaces por gusto.\n- Si rechazas, señala al agente responsable y di exactamente qué debe corregir.
 - Pide solo lo que ese agente puede hacer con sus herramientas, que aparecen en el mensaje. Solo puedes devolver trabajo a los agentes de esta etapa.
 - Un defecto que nadie de esta etapa puede corregir (por ejemplo, una toma que habría que generar de nuevo en una etapa anterior) no se asigna a quien no puede arreglarlo: se declara aparte, empezando por "PARA LA PERSONA:", dentro del problema del agente más cercano, para que la persona decida en su aprobación. Rechaza por él solo si hace la pieza inservible.
 - En un reintento, comprueba primero lo que pediste la vez anterior. No añadas exigencias nuevas de gusto sobre trabajo que ya habías dado por bueno.\n- Termina llamando a submit_verdict.`
       const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}\n\nEntregables de la etapa ${stage.name}:\n${await describe(files, project.id, deliverables)}\n\nAgentes de la etapa y lo que cada uno puede hacer:\n${stage.agents.map((a) => `- ${a.id}: escribe ${a.deliverables.join(', ')}${a.tools?.length ? `; herramientas: ${a.tools.join(', ')}` : '; sin herramientas de generación ni montaje'}`).join('\n')}`
-      await loop(system, prompt, [readTool(files, project.id), verdictTool, ...media], say, mediaTimeoutMs, stop, signal, spend)
+      await loop(system, prompt, [readTool(files, project.id), verdictTool, ...media], say, mediaTimeoutMs, stop, signal, async (usd) => { used += usd; await spend(usd) })
       if (!verdict) throw new Error(`${stage.auditor.name} terminó sin emitir veredicto.`)
       return { ...verdict, costUsd: 0 }
     },
