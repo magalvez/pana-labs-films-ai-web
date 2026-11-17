@@ -31,7 +31,13 @@ button.danger { background: var(--red); border-color: var(--red); color: #fff; }
 
 /* Claqueta */
 .slate { background: var(--slate); border-bottom: 4px solid #0b0f1c; }
-.stripes { height: 12px; background: repeating-linear-gradient(-55deg, var(--paper) 0 18px, #0b0f1c 18px 36px); }
+/* Las franjas van en un pseudo-elemento más ancho que la claqueta: al cargar se desliza justo un periodo (36px / sen 55°) y no se ve el salto. */
+.stripes { height: 12px; position: relative; overflow: hidden; }
+.stripes::before { content: ''; position: absolute; inset: 0 0 0 -44px; background: repeating-linear-gradient(-55deg, var(--paper) 0 18px, #0b0f1c 18px 36px); }
+.stripes.busy::before { animation: stripes .6s linear infinite; }
+@keyframes stripes { to { transform: translateX(43.95px); } }
+.loading { font-family: var(--pixel); font-size: 16px; color: var(--amber); min-width: 9ch; text-align: right; }
+@media (prefers-reduced-motion: reduce) { .stripes.busy::before { animation: none; } }
 .slate-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px; padding: 12px 20px; }
 .slate h1 { font-size: 26px; color: var(--paper); letter-spacing: .5px; }
 .field { display: grid; gap: 2px; }
@@ -124,3 +130,13 @@ dialog button.primary { border-color: var(--ink); }
   .actions { margin-left: 0; }
   .stage-floor { padding: 12px; }
 }
+
+.version .origin { color: #5b5547; }
+.version > button { margin-top: 6px; font-size: 14px; padding: 3px 8px; }
+.sheet button.file { border: 0; padding: 0; color: #1d3a8a; text-decoration: underline; font-family: var(--body); font-size: 16px; }
+
+.login { min-height: 100%; display: flex; flex-direction: column; background: var(--night); }
+.login form { margin: auto; width: min(380px, calc(100vw - 32px)); background: var(--paper); color: var(--ink); padding: 28px; display: grid; gap: 14px; border-left: 12px solid var(--amber); }
+.login h1 { font-size: 28px; }
+.login p { margin: 0; }
+.login button { color: var(--ink); border-color: var(--ink); justify-self: start; }

@@ -1,10 +1,13 @@
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api } from './api'
+import { api, openFile, setToken } from './api'
 import { Office } from './office/Office'
 import type { Ev, SchemeT, StageT } from './office/world'
 
 type Project = { id: string; name: string; brief: string; scheme: string; status: string; reason: string | null; budget_cap: number; spent: number }
-type Step = { stage: string; agent: string; version: number; status: string; feedback: string | null }
+type Step = { stage: string; agent: string; version: number; status: string; feedback: string | null; model: string | null }
+type Brand = { name: string; kit: string }
+type Config = { supabaseUrl: string; supabaseAnonKey: string }
 type Detail = Project & { currentStage: string | null; stages: { stage: string; status: string; attempts: number }[]; steps: Step[] }
 type Settings = { humanReview: boolean; simulation: boolean }
 
@@ -23,47 +26,85 @@ export function App() {
   const [replay, setReplay] = useState(0)
   const [replaying, setReplaying] = useState(false)
   const [error, setError] = useState('')
+  const [brands, setBrands] = useState<Brand[]>([])
+  const [brandName, setBrandName] = useState('')
+  const [brandKit, setBrandKit] = useState('')
+  const [config, setConfig] = useState<Config | null>(null)
+  const [signedIn, setSignedIn] = useState(false)
+  const supabase = useRef<SupabaseClient | null>(null)
+  const pollNow = useRef(() => {})
   const newDialog = useRef<HTMLDialogElement>(null)
   const settingsDialog = useRef<HTMLDialogElement>(null)
 
+  // Cuántas acciones siguen esperando respuesta del servidor: mientras haya alguna, la claqueta avisa.
+  const [loading, setLoading] = useState(0)
   const act = useCallback(async (fn: () => Promise<unknown>) => {
-    try { setError(''); await fn() } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    setLoading((n) => n + 1)
+    try { setError(''); await fn() } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setLoading((n) => n - 1) }
   }, [])
 
+  // Arranque: la sesión la lleva Supabase Auth.
   useEffect(() => {
+    let off = () => {}
     void act(async () => {
-      const [s, st, ps] = await Promise.all([api<SchemeT[]>('/schemes'), api<Settings>('/settings'), api<Project[]>('/projects')])
-      setSchemes(s); setSettings(st); setProjects(ps); setPid(ps[0]?.id ?? null)
+      const cfg = await api<Config>('/config')
+      const client = (supabase.current = createClient(cfg.supabaseUrl, cfg.supabaseAnonKey))
+      const apply = (session: { access_token: string } | null) => { setToken(session?.access_token ?? null); setSignedIn(!!session) }
+      apply((await client.auth.getSession()).data.session)
+      off = client.auth.onAuthStateChange((_event, session) => apply(session)).data.subscription.unsubscribe
+      setConfig(cfg)
     })
+    return () => off()
   }, [act])
+  const ready = !!config && signedIn
 
   useEffect(() => {
+    if (!ready) return
+    void act(async () => {
+      const [s, st, ps, bs] = await Promise.all([api<SchemeT[]>('/schemes'), api<Settings>('/settings'), api<Project[]>('/projects'), api<Brand[]>('/brands')])
+      setSchemes(s); setSettings(st); setProjects(ps); setBrands(bs); setPid(ps[0]?.id ?? null)
+    })
+  }, [act, ready])
+
+  // Eventos y estado del proyecto por consulta periódica: rápida mientras corre, lenta cuando espera.
+  useEffect(() => {
     setEvents([]); setDetail(null); setSelected(null); setReplaying(false)
-    if (!pid) return
-    const source = new EventSource(`/api/projects/${pid}/events`)
-    let buffer: Ev[] = [], raf = 0
-    const flush = () => {
-      raf = 0
-      const batch = buffer
-      buffer = []
-      setEvents((prev) => prev.concat(batch))
-      void api<Detail>(`/projects/${pid}`).then(setDetail, () => {})
+    if (!pid || !ready) return
+    let stopped = false, busy = false, after = 0, timer = 0
+    const poll = async () => {
+      if (busy) return
+      busy = true
+      clearTimeout(timer)
+      let delay = 6000
+      try {
+        const r = await api<{ events: Ev[]; project: Detail }>(`/projects/${pid}/events?after=${after}`)
+        if (stopped) return
+        if (r.events.length) { after = r.events[r.events.length - 1].id; setEvents((prev) => prev.concat(r.events)) }
+        setDetail(r.project)
+        if (r.project.status === 'running') delay = 1000
+      } catch { /* se reintenta en la siguiente consulta */ } finally { busy = false }
+      if (!stopped) timer = window.setTimeout(poll, delay)
     }
-    source.onmessage = (m) => { buffer.push(JSON.parse(m.data)); raf ||= requestAnimationFrame(flush) }
-    return () => { source.close(); cancelAnimationFrame(raf) }
-  }, [pid])
+    pollNow.current = () => void poll()
+    void poll()
+    return () => { stopped = true; clearTimeout(timer) }
+  }, [pid, ready])
 
   const scheme = schemes.find((s) => s.id === detail?.scheme) ?? schemes[0]
   const endReplay = useCallback(() => setReplaying(false), [])
-  const post = (path: string, body?: unknown) => act(() => api(`/projects/${pid}/${path}`, 'POST', body ?? {}))
+  const post = (path: string, body?: unknown) => act(async () => { await api(`/projects/${pid}/${path}`, 'POST', body ?? {}); pollNow.current() })
 
+  if (config && !signedIn) return <Login onSubmit={async (email, password) => {
+    const { error } = await supabase.current!.auth.signInWithPassword({ email, password })
+    if (error) throw new Error('Correo o contraseña incorrectos')
+  }} />
   if (!scheme || !settings) return <p className="boot">{error || 'Abriendo el estudio…'}</p>
 
   const stage = scheme.stages.find((s) => s.id === detail?.currentStage)
   return (
     <div className="app">
       <header className="slate">
-        <div className="stripes" aria-hidden="true" />
+        <div className={loading ? 'stripes busy' : 'stripes'} aria-hidden="true" />
         <div className="slate-row">
           <h1>Pana Films Lab</h1>
           <label className="field">
@@ -91,10 +132,12 @@ export function App() {
             </>
           )}
           <div className="actions">
+            <span className="loading" role="status">{loading > 0 && 'Cargando…'}</span>
             {detail?.status === 'running' && <button onClick={() => post('pause')}>Pausar</button>}
             {detail && events.length > 0 && <button disabled={replaying} onClick={() => { setReplaying(true); setReplay((n) => n + 1) }}>{replaying ? 'Reproduciendo…' : 'Ver repetición'}</button>}
             <button onClick={() => settingsDialog.current?.showModal()}>Configuración</button>
             <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
+            <button onClick={() => supabase.current?.auth.signOut()}>Cerrar sesión</button>
           </div>
         </div>
       </header>
@@ -122,13 +165,23 @@ export function App() {
         <form method="dialog" onSubmit={(e) => {
           const f = new FormData(e.currentTarget), form = e.currentTarget
           void act(async () => {
-            const p = await api<Project>('/projects', 'POST', { name: f.get('name'), brief: f.get('brief'), budgetCap: Number(f.get('budgetCap')) })
-            setProjects((ps) => [p, ...ps]); setPid(p.id); form.reset()
+            const p = await api<Project>('/projects', 'POST', { name: f.get('name'), brief: f.get('brief'), budgetCap: Number(f.get('budgetCap')), brandName, brandKit })
+            setProjects((ps) => [p, ...ps]); setPid(p.id); form.reset(); setBrandName(''); setBrandKit('')
+            setBrands(await api<Brand[]>('/brands'))
           })
         }}>
           <h2>Nuevo proyecto</h2>
           <label>Nombre de la producción<input name="name" required maxLength={80} placeholder="Café Aurora, lanzamiento" /></label>
-          <label>Brief del cliente<textarea name="brief" required rows={6} placeholder="Marca, producto, público, objetivo, duración y tono." /></label>
+          <label>Brief del cliente<textarea name="brief" required rows={5} placeholder="Marca, producto, público, objetivo, duración y tono." /></label>
+          <label>Cliente o marca (opcional)
+            <input list="brands" value={brandName} maxLength={80} placeholder="Elige uno guardado o escribe uno nuevo"
+              onChange={(e) => { setBrandName(e.target.value); const known = brands.find((b) => b.name === e.target.value); if (known) setBrandKit(known.kit) }} />
+            <datalist id="brands">{brands.map((b) => <option key={b.name} value={b.name} />)}</datalist>
+          </label>
+          {brandName.trim() && <>
+            <label>Biblioteca de marca<textarea rows={4} value={brandKit} onChange={(e) => setBrandKit(e.target.value)} placeholder="Paleta con valores hex, tono de voz, frases que sí y que no, datos del producto, reglas del logo." /></label>
+            <p className="note">Se guarda con el cliente y todos los agentes la reciben en sus próximos proyectos.</p>
+          </>}
           <label>Tope de presupuesto en dólares<input name="budgetCap" type="number" required min="1" step="1" defaultValue={50} /></label>
           <p className="note">El motor se detiene y te pregunta cuando el gasto alcanza este tope.</p>
           <div className="dialog-actions"><button type="button" onClick={() => newDialog.current?.close()}>Cancelar</button><button className="primary">Crear proyecto</button></div>
@@ -149,12 +202,15 @@ export function App() {
   )
 }
 
-function Decision({ detail, stage, events, post, onReplay }: { detail: Detail; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<void>; onReplay: () => void }) {
+function Decision({ detail, stage, events, post: postNow, onReplay }: { detail: Detail; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<void>; onReplay: () => void }) {
   const [rejecting, setRejecting] = useState(false)
   const [comment, setComment] = useState('')
   const [agents, setAgents] = useState<string[]>([])
   const [cap, setCap] = useState(detail.budget_cap * 2)
   useEffect(() => { setRejecting(false); setComment(''); setAgents([]) }, [detail.currentStage, detail.status])
+  // El servidor tarda en confirmar; mientras tanto los botones quedan bloqueados para no enviar dos veces.
+  const [sending, setSending] = useState(false)
+  const post = (path: string, body?: unknown) => { setSending(true); return postNow(path, body).finally(() => setSending(false)) }
   const { status, reason } = detail
 
   if (status === 'waiting_human' && stage) {
@@ -178,8 +234,8 @@ function Decision({ detail, stage, events, post, onReplay }: { detail: Detail; s
         </div>
         <div className="decision-actions">
           {rejecting
-            ? <><button onClick={() => setRejecting(false)}>Cancelar</button><button className="danger" disabled={!comment.trim()} onClick={() => post('decision', { approve: false, comment, agents })}>Devolver etapa</button></>
-            : <><button onClick={() => setRejecting(true)}>Devolver con comentario</button><button className="primary" onClick={() => post('decision', { approve: true })}>{escalated ? 'Aprobar de todos modos' : 'Aprobar etapa'}</button></>}
+            ? <><button onClick={() => setRejecting(false)}>Cancelar</button><button className="danger" disabled={sending || !comment.trim()} onClick={() => post('decision', { approve: false, comment, agents })}>Devolver etapa</button></>
+            : <><button onClick={() => setRejecting(true)}>Devolver con comentario</button><button className="primary" disabled={sending} onClick={() => post('decision', { approve: true })}>{sending ? 'Aprobando…' : escalated ? 'Aprobar de todos modos' : 'Aprobar etapa'}</button></>}
         </div>
       </div>
     )
@@ -254,6 +310,7 @@ function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: S
     if (e.type === 'cost' && mine) cost += d.usd
   }
   const canRerun = agent && detail.status === 'paused' && detail.currentStage === stage.id
+  const canRestore = agent && (detail.status === 'paused' || detail.status === 'waiting_human') && detail.currentStage === stage.id
 
   return (
     <>
@@ -267,8 +324,10 @@ function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: S
           {[...steps].reverse().map((s) => (
             <div key={s.version} className="version">
               <strong>Versión {s.version}{s.status === 'rejected' && ' (devuelta)'}</strong>
+              {s.model && <p className="origin">{s.model.startsWith('copia') ? `Es una ${s.model}` : `Hecha con ${s.model}`}</p>}
               {s.feedback && <p className="bad">{s.feedback}</p>}
-              <ul>{[...agent.deliverables, 'handoff.json'].map((f) => <li key={f}><a href={`/api/projects/${detail.id}/files/${stage.id}/${agent.id}/v${s.version}/${f}`} target="_blank" rel="noreferrer">{f}</a></li>)}</ul>
+              <ul>{[...agent.deliverables, 'handoff.json'].map((f) => <li key={f}><button className="file" onClick={() => openFile(`/projects/${detail.id}/files/${stage.id}/${agent.id}/v${s.version}/${f}`).catch(() => {})}>{f}</button></li>)}</ul>
+              {canRestore && s.version < steps[steps.length - 1].version && <button onClick={() => post('restore', { agent: selected, version: s.version })}>Volver a esta versión</button>}
             </div>
           ))}
         </section>
@@ -286,5 +345,28 @@ function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: S
         <ol className="log">{[...log].reverse().map((l, i) => <li key={i} className={l.bad ? 'bad' : ''}><time>{hour(l.ts)}</time>{l.text}</li>)}</ol>
       </section>
     </>
+  )
+}
+
+function Login({ onSubmit }: { onSubmit: (email: string, password: string) => Promise<void> }) {
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className="login">
+      <div className="stripes" aria-hidden="true" />
+      <form onSubmit={(e) => {
+        e.preventDefault()
+        const f = new FormData(e.currentTarget)
+        setBusy(true); setError('')
+        onSubmit(String(f.get('email')), String(f.get('password'))).catch((err) => setError(err.message)).finally(() => setBusy(false))
+      }}>
+        <h1>Pana Films Lab</h1>
+        <p>Entra con tu cuenta del estudio.</p>
+        <label>Correo<input name="email" type="email" required autoComplete="username" /></label>
+        <label>Contraseña<input name="password" type="password" required autoComplete="current-password" /></label>
+        {error && <p className="bad" role="alert">{error}</p>}
+        <button className="primary" disabled={busy}>{busy ? 'Entrando…' : 'Entrar'}</button>
+      </form>
+    </div>
   )
 }

@@ -1,6 +1,5 @@
 node_modules/
 dist/
-data/
-workspace/
-.env
+.env*
+!.env.example
 .DS_Store

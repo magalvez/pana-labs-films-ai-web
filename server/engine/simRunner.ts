@@ -1,5 +1,3 @@
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { Runner } from './types.ts'
 
@@ -8,20 +6,20 @@ export function simRunner(opts: { delayMs?: number; rejectOnce?: string[] } = {}
   const delayMs = opts.delayMs ?? 0
   const rejected = new Set<string>()
   return {
-    async runAgent({ project, stage, agent, version, outDir, inputs, feedback, to, say }) {
+    async runAgent({ project, stage, agent, version, dir, files, inputs, feedback, to, say }) {
       say(feedback ? `Corrigiendo: ${feedback}` : `Leyendo ${inputs.length} entregables previos`)
       await sleep(delayMs)
       for (const file of agent.deliverables) {
         const body = file.endsWith('.json')
           ? JSON.stringify({ simulated: true, project: project.name, agent: agent.id, version }, null, 2)
           : `Simulación de ${file}\nProyecto: ${project.name}\nAgente: ${agent.name}\nVersión: ${version}\n`
-        writeFileSync(join(outDir, file), body)
+        await files.write(`${dir}/${file}`, body)
         say(`Escribí ${file}`)
         await sleep(delayMs / 2)
       }
       const handoff = { agent: agent.id, stage: stage.id, version, to, summary: `${agent.name} entregó ${agent.deliverables.join(', ')}`, files: agent.deliverables }
-      writeFileSync(join(outDir, 'handoff.json'), JSON.stringify(handoff, null, 2))
-      return { costUsd: 0 }
+      await files.write(`${dir}/handoff.json`, JSON.stringify(handoff, null, 2))
+      return { costUsd: 0, model: 'simulación' }
     },
     async runAuditor({ project, stage, deliverables, say }) {
       say(`Revisando ${deliverables.length} entregas contra la rúbrica`)

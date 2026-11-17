@@ -20,8 +20,23 @@ export type Project = {
   budget_cap: number
   spent: number
   created_at: string
+
+  brand: string | null
 }
 
+/** Consulta SQL con marcadores `?`. Devuelve las filas. */
+export type Db = (sql: string, ...params: unknown[]) => Promise<any[]>
+
+/** Entregables por ruta relativa: `<proyecto>/<etapa>/<agente>/v<n>/<archivo>`, guardados en Supabase Storage. */
+export type Files = {
+  read(path: string): Promise<string | null>
+  write(path: string, content: string): Promise<void>
+  removeDir(prefix: string): Promise<void>
+}
+
+export type Brand = { name: string; kit: string }
+
+/** `dir` es el prefijo de ruta de la versión vigente de ese agente. */
 export type Input = { stage: string; agent: string; dir: string }
 
 export type AgentRun = {
@@ -29,8 +44,10 @@ export type AgentRun = {
   stage: StageDef
   agent: AgentDef
   version: number
-  /** Carpeta vacía donde el agente escribe sus entregables y handoff.json. */
-  outDir: string
+  /** Prefijo vacío donde el agente escribe sus entregables y handoff.json. */
+  dir: string
+  files: Files
+  brand: Brand | null
   inputs: Input[]
   /** Observación del auditor o de la persona cuando es un reintento. */
   feedback: string | null
@@ -43,6 +60,8 @@ export type AuditRun = {
   project: Project
   stage: StageDef
   deliverables: Input[]
+  files: Files
+  brand: Brand | null
   say: (text: string) => void
 }
 
@@ -53,7 +72,7 @@ export type Verdict = {
 }
 
 export type Runner = {
-  runAgent(run: AgentRun): Promise<{ costUsd: number }>
+  runAgent(run: AgentRun): Promise<{ costUsd: number; model: string }>
   runAuditor(run: AuditRun): Promise<Verdict>
 }
 
