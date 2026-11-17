@@ -46,7 +46,9 @@ const app = createApp({
   auth: async (token) => {
     const hit = sessions.get(token)
     if (hit && hit.until > Date.now()) return hit.email
-    const email = (await supabase.auth.getUser(token)).data.user?.email?.toLowerCase()
+    const user = (await supabase.auth.getUser(token)).data.user
+    // Un correo sin confirmar no prueba nada: cualquiera podría registrarse con la dirección de otro.
+    const email = user?.email_confirmed_at ? user.email?.toLowerCase() : undefined
     if (!email || !allowed.includes(email)) return null
     if (sessions.size > 100) sessions.clear()
     sessions.set(token, { email, until: Date.now() + 60_000 })
@@ -61,10 +63,11 @@ try {
     console.error(`Hay ${pending.length} migración(es) sin aplicar: ${pending.join(', ')}.\nEjecuta: npm run db:migrate`)
     process.exit(1)
   }
-  await engine.resumeAll()
 } catch (err) {
   console.error(`No se pudo leer la base de datos de Supabase: ${err instanceof Error ? err.message : err}\nRevisa DATABASE_URL en el archivo .env.`)
   process.exit(1)
 }
 const port = Number(env.PORT ?? 8787)
 serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => console.log(`Pana Films Lab en http://127.0.0.1:${port}`))
+// Los proyectos que estaban en marcha se retoman con la API ya arriba: pueden tardar horas y hay que poder pausarlos.
+engine.resumeAll().catch((err) => console.error('No se pudieron retomar los proyectos en marcha:', err))

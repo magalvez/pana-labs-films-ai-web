@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, openFile, setToken } from './api'
+import { api, blobUrl, openFile, setOnExpired, setToken, upload } from './api'
 import { Office } from './office/Office'
 import type { Ev, SchemeT, StageT } from './office/world'
 
@@ -10,6 +10,32 @@ type Brand = { name: string; kit: string }
 type Config = { supabaseUrl: string; supabaseAnonKey: string }
 type Detail = Project & { currentStage: string | null; stages: { stage: string; status: string; attempts: number }[]; steps: Step[] }
 type Settings = { humanReview: boolean; simulation: boolean }
+type Asset = { path: string; tool: string; model: string; costUsd: number; license: string; measurements: { durationSeconds: number | null; width: number | null; height: number | null; lufs: number | null } | null }
+
+const mediaKind = (name: string) => (/\.(jpe?g|png|webp)$/i.test(name) ? 'image' : /\.mp4$/i.test(name) ? 'video' : /\.mp3$/i.test(name) ? 'audio' : null)
+/** La pieza final más reciente, si Motion Graphics ya la entregó. */
+function masterPath(events: Ev[]): string | null {
+  const done = [...events].reverse().find((e) => e.type === 'agent.done' && e.data.agent === 'motion-graphics' && e.data.files?.includes('master.mp4'))
+  return done ? `${done.data.stage}/motion-graphics/v${done.data.version}/master.mp4` : null
+}
+
+/** Imagen, video o audio de un entregable. Se descarga con la sesión cuando hace falta mostrarlo. */
+function Media({ path, name }: { path: string; name: string }) {
+  const [url, setUrl] = useState('')
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    let current = '', gone = false
+    setUrl(''); setFailed(false)
+    blobUrl(path).then((u) => { current = u; if (gone) URL.revokeObjectURL(u); else setUrl(u) }).catch(() => setFailed(true))
+    return () => { gone = true; if (current) URL.revokeObjectURL(current) }
+  }, [path])
+  if (failed) return <p className="bad">No se pudo cargar {name}.</p>
+  if (!url) return <p className="hint">Cargando {name}…</p>
+  const kind = mediaKind(name)
+  if (kind === 'image') return <img className="media" src={url} alt={name} />
+  if (kind === 'video') return <video className="media" src={url} controls playsInline aria-label={name} />
+  return <audio className="media" src={url} controls aria-label={name} />
+}
 
 const STATUS: Record<string, string> = { running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera tu decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
 const usd = (n: number) => `$${n.toFixed(2)}`
@@ -20,8 +46,11 @@ export function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [pid, setPid] = useState<string | null>(null)
-  const [detail, setDetail] = useState<Detail | null>(null)
-  const [events, setEvents] = useState<Ev[]>([])
+  const [loadedDetail, setDetail] = useState<Detail | null>(null)
+  const [loadedEvents, setEvents] = useState<Ev[]>([])
+  // Al cambiar de producción, lo cargado de la anterior sigue en memoria un instante: no se muestra ni se anima.
+  const detail = loadedDetail?.id === pid ? loadedDetail : null
+  const events = useMemo(() => (loadedEvents[0]?.projectId === pid ? loadedEvents : []), [loadedEvents, pid])
   const [selected, setSelected] = useState<string | null>(null)
   const [replay, setReplay] = useState(0)
   const [replaying, setReplaying] = useState(false)
@@ -38,23 +67,28 @@ export function App() {
 
   // Cuántas acciones siguen esperando respuesta del servidor: mientras haya alguna, la claqueta avisa.
   const [loading, setLoading] = useState(0)
+  /** Ejecuta una acción mostrando la carga y el error. Devuelve si salió bien. */
   const act = useCallback(async (fn: () => Promise<unknown>) => {
     setLoading((n) => n + 1)
-    try { setError(''); await fn() } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setLoading((n) => n - 1) }
+    try { setError(''); await fn(); return true } catch (e) { setError(e instanceof Error ? e.message : String(e)); return false } finally { setLoading((n) => n - 1) }
   }, [])
 
   // Arranque: la sesión la lleva Supabase Auth.
   useEffect(() => {
-    let off = () => {}
+    let off = () => {}, gone = false
     void act(async () => {
       const cfg = await api<Config>('/config')
+      if (gone) return
       const client = (supabase.current = createClient(cfg.supabaseUrl, cfg.supabaseAnonKey))
       const apply = (session: { access_token: string } | null) => { setToken(session?.access_token ?? null); setSignedIn(!!session) }
+      setOnExpired(() => void client.auth.signOut())
       apply((await client.auth.getSession()).data.session)
-      off = client.auth.onAuthStateChange((_event, session) => apply(session)).data.subscription.unsubscribe
+      const sub = client.auth.onAuthStateChange((_event, session) => apply(session)).data.subscription
+      off = () => sub.unsubscribe()
+      if (gone) off()
       setConfig(cfg)
     })
-    return () => off()
+    return () => { gone = true; off() }
   }, [act])
   const ready = !!config && signedIn
 
@@ -70,9 +104,10 @@ export function App() {
   useEffect(() => {
     setEvents([]); setDetail(null); setSelected(null); setReplaying(false)
     if (!pid || !ready) return
-    let stopped = false, busy = false, after = 0, timer = 0
+    let stopped = false, busy = false, again = false, after = 0, timer = 0
     const poll = async () => {
-      if (busy) return
+      // Si piden refrescar a mitad de una consulta, se repite al terminar: esa consulta puede traer el estado viejo.
+      if (busy) { again = true; return }
       busy = true
       clearTimeout(timer)
       let delay = 6000
@@ -83,6 +118,8 @@ export function App() {
         setDetail(r.project)
         if (r.project.status === 'running') delay = 1000
       } catch { /* se reintenta en la siguiente consulta */ } finally { busy = false }
+      if (again) delay = 0
+      again = false
       if (!stopped) timer = window.setTimeout(poll, delay)
     }
     pollNow.current = () => void poll()
@@ -92,7 +129,7 @@ export function App() {
 
   const scheme = schemes.find((s) => s.id === detail?.scheme) ?? schemes[0]
   const endReplay = useCallback(() => setReplaying(false), [])
-  const post = (path: string, body?: unknown) => act(async () => { await api(`/projects/${pid}/${path}`, 'POST', body ?? {}); pollNow.current() })
+  const post = (path: string, body?: unknown) => act(async () => { try { await api(`/projects/${pid}/${path}`, 'POST', body ?? {}) } finally { pollNow.current() } })
 
   if (config && !signedIn) return <Login onSubmit={async (email, password) => {
     const { error } = await supabase.current!.auth.signInWithPassword({ email, password })
@@ -154,7 +191,7 @@ export function App() {
               <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
             </div>
           )}
-          {detail && <Decision detail={detail} stage={stage} events={events} post={post} onReplay={() => { setReplaying(true); setReplay((n) => n + 1) }} />}
+          {detail && <Decision detail={detail} stage={stage} events={events} post={post} onSelect={setSelected} onReplay={() => { setReplaying(true); setReplay((n) => n + 1) }} />}
         </section>
         <aside className="sheet" aria-label="Hoja de llamado">
           {detail ? <Sheet scheme={scheme} detail={detail} events={events} selected={selected} onSelect={setSelected} post={post} /> : <p className="hint">Aquí aparece el detalle de cada agente: qué está haciendo, qué entregó y cuánto ha gastado.</p>}
@@ -181,6 +218,7 @@ export function App() {
           {brandName.trim() && <>
             <label>Biblioteca de marca<textarea rows={4} value={brandKit} onChange={(e) => setBrandKit(e.target.value)} placeholder="Paleta con valores hex, tono de voz, frases que sí y que no, datos del producto, reglas del logo." /></label>
             <p className="note">Se guarda con el cliente y todos los agentes la reciben en sus próximos proyectos.</p>
+            <BrandFiles brand={brandName.trim()} act={act} />
           </>}
           <label>Tope de presupuesto en dólares<input name="budgetCap" type="number" required min="1" step="1" defaultValue={50} /></label>
           <p className="note">El motor se detiene y te pregunta cuando el gasto alcanza este tope.</p>
@@ -194,7 +232,7 @@ export function App() {
           <label className="check"><input type="checkbox" checked={settings.humanReview} onChange={(e) => act(async () => setSettings(await api<Settings>('/settings', 'PUT', { humanReview: e.target.checked })))} />
             <span><strong>Revisión humana en cada etapa</strong>Cuando el auditor aprueba una etapa, el proyecto espera tu visto bueno. Apagada, avanza solo. El auditor corre siempre.</span></label>
           <label className="check"><input type="checkbox" checked={settings.simulation} onChange={(e) => act(async () => setSettings(await api<Settings>('/settings', 'PUT', { simulation: e.target.checked })))} />
-            <span><strong>Modo simulación</strong>Los agentes escriben entregables de muestra y no gastan. Apagado, cada agente llama a Claude y consume tu saldo de Anthropic. Las tomas de video y audio todavía no se generan.</span></label>
+            <span><strong>Modo simulación</strong>Los agentes escriben entregables de muestra y no gastan. Apagado, cada agente llama a Claude y genera imagen, video, voz y música de verdad: consume tu saldo de Anthropic, fal.ai y ElevenLabs hasta el tope del proyecto.</span></label>
           <div className="dialog-actions"><button className="primary">Listo</button></div>
         </form>
       </dialog>
@@ -202,27 +240,73 @@ export function App() {
   )
 }
 
-function Decision({ detail, stage, events, post: postNow, onReplay }: { detail: Detail; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<void>; onReplay: () => void }) {
+/** Logo y fotos de producto reales del cliente. Se suben al elegirlos y quedan guardados con la marca. */
+function BrandFiles({ brand, act }: { brand: string; act: (fn: () => Promise<unknown>) => Promise<boolean> }) {
+  const [files, setFiles] = useState<string[]>([])
+  const [sending, setSending] = useState(false)
+  const path = `/brands/${encodeURIComponent(brand)}/assets`
+  const current = useRef(path)
+  current.current = path
+  useEffect(() => {
+    let gone = false
+    setFiles([])
+    // Espera a que termines de escribir el nombre antes de consultar.
+    const timer = window.setTimeout(() => api<string[]>(path).then((f) => { if (!gone) setFiles(f) }).catch(() => {}), 400)
+    return () => { gone = true; clearTimeout(timer) }
+  }, [path])
+  const send = (kind: 'logo' | 'product', input: HTMLInputElement) => {
+    const chosen = [...(input.files ?? [])]
+    if (!chosen.length) return
+    setSending(true)
+    void act(async () => {
+      for (const file of chosen) {
+        const form = new FormData()
+        form.set('file', file); form.set('kind', kind)
+        const saved = await upload<string[]>(path, form)
+        // Si el nombre de la marca cambió mientras subía, esta lista ya no es la que se muestra.
+        if (current.current === path) setFiles(saved)
+      }
+    }).finally(() => { setSending(false); input.value = '' })
+  }
+  return (
+    <fieldset className="brand-files" disabled={sending}>
+      <legend>Archivos reales de «{brand}»</legend>
+      <label>Logo<input type="file" accept="image/png,image/jpeg,image/svg+xml" onChange={(e) => send('logo', e.currentTarget)} /></label>
+      <label>Fotos del producto<input type="file" multiple accept="image/png,image/jpeg" onChange={(e) => send('product', e.currentTarget)} /></label>
+      <p className="note">{sending ? 'Subiendo…' : files.length ? `Guardados: ${files.join(', ')}.` : 'Sin archivos todavía.'} Escribe el nombre completo de la marca antes de subir: se guardan con ese nombre. El logo y el producto nunca se generan con IA: el cierre usa este logo y las tomas usan estas fotos como referencia.</p>
+    </fieldset>
+  )
+}
+
+function Decision({ detail, stage, events, post: postNow, onSelect, onReplay }: { detail: Detail; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<boolean>; onSelect: (id: string) => void; onReplay: () => void }) {
   const [rejecting, setRejecting] = useState(false)
   const [comment, setComment] = useState('')
   const [agents, setAgents] = useState<string[]>([])
   const [cap, setCap] = useState(detail.budget_cap * 2)
-  useEffect(() => { setRejecting(false); setComment(''); setAgents([]) }, [detail.currentStage, detail.status])
+  useEffect(() => { setRejecting(false); setComment(''); setAgents([]); setCap(detail.budget_cap * 2) }, [detail.currentStage, detail.status, detail.budget_cap])
   // El servidor tarda en confirmar; mientras tanto los botones quedan bloqueados para no enviar dos veces.
   const [sending, setSending] = useState(false)
   const post = (path: string, body?: unknown) => { setSending(true); return postNow(path, body).finally(() => setSending(false)) }
   const { status, reason } = detail
+  const master = useMemo(() => masterPath(events), [events])
+  // La pieza final se ve aquí mismo desde que existe: en la aprobación del corte, en la entrega y al terminar.
+  const piece = master && <div className="decision-media"><Media path={`/projects/${detail.id}/files/${master}`} name="master.mp4" /></div>
 
   if (status === 'waiting_human' && stage) {
     const verdict = [...events].reverse().find((e) => e.type === 'audit.verdict' && e.data.stage === stage.id)
     const escalated = reason === 'escalated'
     return (
       <div className="decision" role="region" aria-label="Decisión pendiente">
+        {(stage.id === 'postproduction' || stage.id === 'delivery') && piece}
         <div>
           <h2>{escalated ? `El auditor rechazó ${stage.name} tres veces` : `${stage.name} pasó la auditoría`}</h2>
           {escalated
             ? <ul>{(verdict?.data.issues ?? []).map((i: any, n: number) => <li key={n}>{stage.agents.find((a) => a.id === i.agent)?.name}: {i.problem}</li>)}</ul>
-            : <p>Te toca revisar: {stage.gate.toLowerCase()}. Haz clic en un agente para abrir sus entregables.</p>}
+            : <p>Te toca revisar: {stage.gate.toLowerCase()}. Abre lo que entregó cada agente; es lo mismo que revisó el auditor.</p>}
+          <p className="review">
+            {stage.agents.map((a) => <button key={a.id} onClick={() => onSelect(a.id)}>{a.name.replace(/ Agents?$/, '')}</button>)}
+            <button onClick={() => onSelect(stage.auditor.id)}>Qué dijo el auditor</button>
+          </p>
           {rejecting && (
             <div className="reject">
               <label>Qué hay que corregir<textarea rows={3} value={comment} onChange={(e) => setComment(e.target.value)} /></label>
@@ -255,14 +339,25 @@ function Decision({ detail, stage, events, post: postNow, onReplay }: { detail: 
       <div className="decision-actions"><button className="primary" onClick={() => post('resume')}>Reintentar</button></div></div>
   )
   if (status === 'done') return (
-    <div className="decision"><div><h2>Comercial entregado</h2><p>Las cinco etapas pasaron auditoría. Gasto total: {usd(detail.spent)}.</p></div>
+    <div className="decision">{piece}<div><h2>Comercial entregado</h2><p>Las cinco etapas pasaron auditoría. Gasto total: {usd(detail.spent)}.</p></div>
       <div className="decision-actions"><button className="primary" onClick={onReplay}>Ver repetición</button></div></div>
   )
   return null
 }
 
-function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: SchemeT; detail: Detail; events: Ev[]; selected: string | null; onSelect: (id: string | null) => void; post: (path: string, body?: unknown) => Promise<void> }) {
+function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: SchemeT; detail: Detail; events: Ev[]; selected: string | null; onSelect: (id: string | null) => void; post: (path: string, body?: unknown) => Promise<boolean> }) {
   const [note, setNote] = useState('')
+  const [open, setOpen] = useState<string | null>(null)
+  const [assets, setAssets] = useState<Asset[]>([])
+  const delivered = detail.steps.filter((s) => s.agent === selected).length
+  // La procedencia se consulta al abrir la ficha de un agente y cada vez que entrega una versión.
+  useEffect(() => {
+    setOpen(null)
+    if (!selected) return
+    let gone = false
+    api<Asset[]>(`/projects/${detail.id}/assets`).then((a) => { if (!gone) setAssets(a) }).catch(() => {})
+    return () => { gone = true }
+  }, [detail.id, selected, delivered])
   const names = useMemo(() => new Map(scheme.stages.flatMap((s) => [...s.agents, s.auditor].map((a) => [a.id, a.name] as const))), [scheme])
   // Estado actual de cada agente, derivado del historial.
   const states = useMemo(() => {
@@ -309,6 +404,9 @@ function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: S
     else if (e.type === 'audit.verdict') for (const i of d.issues ?? []) if (i.agent === selected) log.push({ ts: e.ts, text: `El auditor devolvió la entrega: ${i.problem}`, bad: true })
     if (e.type === 'cost' && mine) cost += d.usd
   }
+  // Archivos reales de cada versión: los entregables fijos más lo que el agente generó.
+  const produced = new Map<number, string[]>()
+  for (const e of events) if (e.type === 'agent.done' && e.data.agent === selected && Array.isArray(e.data.files)) produced.set(e.data.version, e.data.files)
   const canRerun = agent && detail.status === 'paused' && detail.currentStage === stage.id
   const canRestore = agent && (detail.status === 'paused' || detail.status === 'waiting_human') && detail.currentStage === stage.id
 
@@ -326,7 +424,18 @@ function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: S
               <strong>Versión {s.version}{s.status === 'rejected' && ' (devuelta)'}</strong>
               {s.model && <p className="origin">{s.model.startsWith('copia') ? `Es una ${s.model}` : `Hecha con ${s.model}`}</p>}
               {s.feedback && <p className="bad">{s.feedback}</p>}
-              <ul>{[...agent.deliverables, 'handoff.json'].map((f) => <li key={f}><button className="file" onClick={() => openFile(`/projects/${detail.id}/files/${stage.id}/${agent.id}/v${s.version}/${f}`).catch(() => {})}>{f}</button></li>)}</ul>
+              <ul>{[...new Set([...(produced.get(s.version) ?? agent.deliverables), 'handoff.json'])].map((f) => {
+                const rel = `${stage.id}/${agent.id}/v${s.version}/${f}`, url = `/projects/${detail.id}/files/${rel}`
+                const origin = assets.find((a) => a.path === rel), m = origin?.measurements
+                if (!mediaKind(f)) return <li key={f}><button className="file" onClick={() => openFile(url).catch(() => {})}>{f}</button></li>
+                return (
+                  <li key={f}>
+                    <button className="file" aria-expanded={open === rel} onClick={() => setOpen(open === rel ? null : rel)}>{f}</button>
+                    {origin && <span className="origin"> {[m?.width && `${m.width}x${m.height}`, m?.durationSeconds && `${m.durationSeconds} s`, m?.lufs != null && `${m.lufs} LUFS`, origin.costUsd > 0 && usd(origin.costUsd)].filter(Boolean).join(', ')}</span>}
+                    {open === rel && <><Media path={url} name={f} />{origin && <p className="origin">Hecho con {origin.tool}, {origin.model}. {origin.license}</p>}</>}
+                  </li>
+                )
+              })}</ul>
               {canRestore && s.version < steps[steps.length - 1].version && <button onClick={() => post('restore', { agent: selected, version: s.version })}>Volver a esta versión</button>}
             </div>
           ))}
@@ -336,7 +445,7 @@ function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: S
         <section>
           <h3>Relanzar con una nota</h3>
           <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Qué debe cambiar en la próxima versión" />
-          <button className="primary" disabled={!note.trim()} onClick={() => post('rerun', { agent: selected, note }).then(() => setNote(''))}>Relanzar agente</button>
+          <button className="primary" disabled={!note.trim()} onClick={() => post('rerun', { agent: selected, note }).then((ok) => { if (ok) setNote('') })}>Relanzar agente</button>
         </section>
       )}
       <section>

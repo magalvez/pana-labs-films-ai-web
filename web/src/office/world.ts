@@ -150,7 +150,7 @@ export function createWorld(scheme: SchemeT, calm = false) {
   }
 
   function apply(ev: Ev, animate = true) {
-    const d = ev.data, a = actors.get(d.agent), room = rooms.get(d.stage)
+    const d = ev.data ?? {}, a = actors.get(d.agent), room = rooms.get(d.stage)
     const orch = actors.get('orchestrator'), lead = actors.get('creative-lead')
     switch (ev.type) {
       case 'stage.started': if (room) { room.litTo = 1; say(orch, `Arranca ${room.name}`) } break

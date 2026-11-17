@@ -140,3 +140,24 @@ dialog button.primary { border-color: var(--ink); }
 .login h1 { font-size: 28px; }
 .login p { margin: 0; }
 .login button { color: var(--ink); border-color: var(--ink); justify-self: start; }
+
+/* Imagen, video y audio de los entregables */
+.media { display: block; width: 100%; max-height: 60vh; margin: 6px 0; background: #0b0f1c; }
+audio.media { background: none; }
+.decision-media { flex: 1 1 100%; }
+.decision-media .media { max-width: 720px; margin: 0 auto 4px; }
+.brand-files { border: 2px solid var(--ink); padding: 8px 12px 4px; margin: 0 0 12px; display: grid; gap: 8px; }
+.brand-files legend { font-family: var(--pixel); padding: 0 6px; }
+.brand-files input[type=file] { font-family: var(--body); font-size: 14px; }
+
+/* Accesos directos a lo que hay que revisar antes de aprobar una etapa */
+.decision .review { display: flex; flex-wrap: wrap; gap: 6px; max-width: none; }
+.decision .review button { font-family: var(--body); font-size: 14px; padding: 3px 8px; }
+
+/* Con una decisión pendiente, la oficina cede altura para que la barra quepa sin desplazarse.
+   Si aun así no cabe (ventana baja, cabecera en dos filas), la barra se queda pegada al borde inferior.
+   Cuando lleva el reproductor de la pieza es demasiado alta para flotar sobre la oficina y vuelve al flujo normal. */
+.stage-floor:has(.decision) .office { max-width: calc((100vh - 350px) * 648 / 352); }
+.decision { position: sticky; bottom: 12px; z-index: 2; box-shadow: 0 0 0 4px #0b0f1c, 0 -10px 24px rgba(0, 0, 0, .45); }
+.decision:has(.decision-media) { position: static; box-shadow: none; }
+@media (max-width: 980px) { .stage-floor:has(.decision) .office { max-width: 100%; } }

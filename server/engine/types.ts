@@ -1,4 +1,8 @@
-export type AgentDef = { id: string; name: string; deliverables: string[] }
+import { createHash } from 'node:crypto'
+
+/** Familias de herramientas de generación y montaje que un agente puede usar. Ver y medir archivos lo pueden hacer todos. */
+export type ToolFamily = 'image' | 'video' | 'voice' | 'music' | 'sfx' | 'cut' | 'grade' | 'mix' | 'titles' | 'master' | 'versions' | 'provenance'
+export type AgentDef = { id: string; name: string; deliverables: string[]; tools?: ToolFamily[] }
 export type StageDef = {
   id: string
   name: string
@@ -27,14 +31,54 @@ export type Project = {
 /** Consulta SQL con marcadores `?`. Devuelve las filas. */
 export type Db = (sql: string, ...params: unknown[]) => Promise<any[]>
 
-/** Entregables por ruta relativa: `<proyecto>/<etapa>/<agente>/v<n>/<archivo>`, guardados en Supabase Storage. */
+/**
+ * Archivos por ruta, guardados en Supabase Storage.
+ * Entregables: `<proyecto>/<etapa>/<agente>/v<n>/<archivo>`. Biblioteca de marca: `brands/<marca>/<archivo>`.
+ */
 export type Files = {
   read(path: string): Promise<string | null>
   write(path: string, content: string): Promise<void>
+  readBytes(path: string): Promise<Uint8Array | null>
+  writeBytes(path: string, bytes: Uint8Array, contentType: string): Promise<void>
+  /** Nombres de los archivos de una carpeta, sin subcarpetas. */
+  list(dir: string): Promise<string[]>
+  copy(from: string, to: string): Promise<void>
+  /** Dirección temporal para que un proveedor de generación descargue el archivo. */
+  url(path: string): Promise<string>
   removeDir(prefix: string): Promise<void>
 }
 
-export type Brand = { name: string; kit: string }
+/** `assets` son los archivos reales del cliente (logo, fotos de producto), con su ruta completa en Storage. */
+export type Brand = { name: string; kit: string; assets: string[] }
+
+/**
+ * Carpeta de una marca en Storage. La parte legible sale del nombre y el sufijo de su huella exacta,
+ * para que dos clientes de nombre parecido ("Café" y "Cafe", "A&B" y "A B") nunca compartan archivos.
+ */
+export const brandDir = (name: string) => {
+  const slug = name.toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'marca'
+  return `brands/${slug}-${createHash('sha256').update(name).digest('hex').slice(0, 8)}`
+}
+
+export type Measurements = { durationSeconds: number | null; width: number | null; height: number | null; fps: number | null; hasAudio: boolean; lufs: number | null }
+
+/** Registro de procedencia de un archivo generado o montado. `path` es relativa al proyecto. */
+export type Asset = {
+  path: string
+  kind: 'image' | 'video' | 'audio'
+  tool: string
+  provider: string
+  model: string
+  prompt: string | null
+  seed: string | null
+  /** Archivos de los que se derivó, con ruta relativa al proyecto. */
+  inputs: string[]
+  costUsd: number
+  license: string
+  measurements: Measurements | null
+  createdAt: string
+}
+export type NewAsset = Omit<Asset, 'createdAt'>
 
 /** `dir` es el prefijo de ruta de la versión vigente de ese agente. */
 export type Input = { stage: string; agent: string; dir: string }
@@ -54,6 +98,12 @@ export type AgentRun = {
   /** Id del destinatario del traspaso: siguiente agente o auditor. */
   to: string
   say: (text: string) => void
+  /** Registra al instante el costo de una herramienta de pago, para que no se pierda si el agente falla después. */
+  spend(usd: number): Promise<void>
+  record(asset: NewAsset): Promise<void>
+  assets(): Promise<Asset[]>
+  /** Se activa cuando una persona cancela el proyecto: el agente debe dejar de trabajar y de gastar. */
+  signal: AbortSignal
 }
 
 export type AuditRun = {
@@ -63,6 +113,9 @@ export type AuditRun = {
   files: Files
   brand: Brand | null
   say: (text: string) => void
+  assets(): Promise<Asset[]>
+  spend(usd: number): Promise<void>
+  signal: AbortSignal
 }
 
 export type Verdict = {
