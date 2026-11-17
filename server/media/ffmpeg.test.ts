@@ -40,6 +40,19 @@ test('el montaje con ffmpeg produce un máster con la duración, el tamaño y la
 
     await preview(f('master.mp4'), f('hoja.jpg'), m.durationSeconds)
     assert.equal((await probe(f('hoja.jpg'))).width, 1280)
+
+    // Encadenado entre planos, fundido final y encadenado al cierre: ninguno cambia la duración.
+    await cut([{ file: f('a.mp4'), start: 0, duration: 1 }, { file: f('b.mp4'), start: 0, duration: 1, crossfade: 0.4 }], f('suave.mp4'), { seconds: 0.3, color: '#2b1a12' })
+    assert.equal((await probe(f('suave.mp4'))).durationSeconds, 2)
+    await grade(f('suave.mp4'), f('suave-color.mp4'), { contrast: 1, saturation: 1, brightness: 0, gamma: 1 }, [{ from: 1, to: 2, contrast: 0.9, saturation: 0.8, brightness: 0.02, gamma: 1.1 }])
+    assert.equal((await probe(f('suave-color.mp4'))).durationSeconds, 2)
+    await master({ video: f('suave-color.mp4'), endCard: f('a.mp4'), endCardFade: 0.5, supers: [], out: f('master-suave.mp4') })
+    assert.ok(Math.abs((await probe(f('master-suave.mp4'))).durationSeconds! - 4) < 0.15)
+    // Un instante exacto y un tramo corto, para revisar un defecto.
+    await preview(f('master.mp4'), f('instante.jpg'), m.durationSeconds, { at: 1.2, span: 0 })
+    assert.equal((await probe(f('instante.jpg'))).width, 1280)
+    await preview(f('master.mp4'), f('tramo.jpg'), m.durationSeconds, { at: 1, span: 0.5 })
+    assert.equal((await probe(f('tramo.jpg'))).width, 1280)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

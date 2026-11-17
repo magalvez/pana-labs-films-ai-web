@@ -33,7 +33,7 @@ function EndCard({ logo, brandName, tagline, cta, background, color, accent }: E
           : <div style={{ fontSize: unit * 11, fontWeight: 700, letterSpacing: -unit * 0.2 }}>{brandName}</div>}
       </div>
       {tagline && <div style={{ fontSize: unit * 5.2, fontWeight: 500, lineHeight: 1.2, maxWidth: width * 0.8, opacity: fade(14), transform: `translateY(${rise(14)}px)` }}>{tagline}</div>}
-      {cta && <div style={{ fontSize: unit * 3.4, fontWeight: 700, color: accent, opacity: fade(28), transform: `translateY(${rise(28)}px)` }}>{cta}</div>}
+      {cta && <div style={{ fontSize: unit * 4.6, fontWeight: 700, color: accent, opacity: fade(28), transform: `translateY(${rise(28)}px)` }}>{cta}</div>}
     </AbsoluteFill>
   )
 }

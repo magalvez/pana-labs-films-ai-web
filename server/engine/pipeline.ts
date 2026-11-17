@@ -334,13 +334,39 @@ export function createEngine(opts: {
       await setStage(id, stage.id, 'approved')
       await emit(id, 'stage.approved', { stage: stage.id, by: 'human' })
     } else {
-      const all = stage.agents.map((a) => a.id)
-      const chosen = (Array.isArray(d.agents) ? d.agents : []).filter((a) => all.includes(a))
-      await sendBack(id, stage, chosen.length ? chosen : all, d.comment!)
-      await setStage(id, stage.id, 'working', 0)
+      await returnWork(id, schemes[p.scheme], stage, Array.isArray(d.agents) ? d.agents : [], d.comment!)
     }
     await setStatus(id, 'running')
     kick(id)
+  }
+
+  /**
+   * Devuelve trabajo a los agentes elegidos, que pueden ser de la etapa actual o de una anterior ya aprobada
+   * (una toma que hay que generar de nuevo se descubre a veces en el montaje). Todo lo que se hizo después de
+   * ellos depende de su entrega, así que también se actualiza: esos agentes parten de sus archivos anteriores
+   * y rehacen solo lo que cambia. Las etapas reabiertas vuelven a pasar por su auditor y su aprobación.
+   */
+  async function returnWork(id: string, scheme: Scheme, current: StageDef, agents: string[], comment: string) {
+    const upTo = scheme.stages.indexOf(current)
+    const order = scheme.stages.slice(0, upTo + 1).flatMap((s) => s.agents.map((a) => ({ stage: s, agent: a })))
+    const chosen = order.filter((o) => agents.includes(o.agent.id))
+    // Sin nadie señalado, se repite toda la etapa actual.
+    const targets = chosen.length ? chosen : order.filter((o) => o.stage === current)
+    const first = order.indexOf(targets[0])
+    const names = targets.map((t) => t.agent.name).join(', ')
+    const reopensEarlier = targets.some((t) => t.stage !== current)
+    const reopened = new Set<StageDef>()
+    for (const [i, o] of order.entries()) {
+      if (i < first) continue
+      const direct = targets.includes(o)
+      // Dentro de la etapa actual la persona elige exactamente quién repite. El arrastre a los demás
+      // solo ocurre cuando se reabre una etapa anterior, porque entonces cambia la base de todo lo posterior.
+      if (!direct && !reopensEarlier) continue
+      await sendBack(id, o.stage, [o.agent.id], direct ? comment : `Se devolvió trabajo anterior al tuyo (${names}) con esta indicación: ${comment}\nRevisa lo que entreguen de nuevo y actualiza tu entrega solo en lo que dependa de ello. Lo demás se conserva.`)
+      reopened.add(o.stage)
+    }
+    for (const s of reopened) await setStage(id, s.id, 'working', 0)
+    if (reopened.size > 1) await emit(id, 'stages.reopened', { stages: [...reopened].map((s) => s.id), agents: targets.map((t) => t.agent.id) })
   }
 
   async function pause(id: string) {

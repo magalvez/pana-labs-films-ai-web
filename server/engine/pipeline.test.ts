@@ -383,3 +383,31 @@ test('la subida de marca decide el tipo por el contenido y rechaza lo que no es 
   assert.equal((await get('/api/brands/Marca/files/..%2F..%2Fx')).status, 404)
   assert.equal((await get('/api/brands/Marca/files/logo.svg')).headers.get('content-security-policy'), "sandbox; default-src 'none'")
 })
+
+test('desde un gate se puede devolver trabajo a una etapa anterior y lo posterior se actualiza', async () => {
+  const runs: string[] = []
+  const base = simRunner()
+  const spy: Runner = { ...base, runAgent: (run) => (runs.push(`${run.agent.id} v${run.version}`), base.runAgent(run)) }
+  const { engine } = await setup(spy)
+  const id = await start(engine)
+  await engine.decide(id, { approve: true })
+  await engine.advance(id)
+  // En el gate de Pre-production se descubre un problema del guion, que es de la etapa 1.
+  runs.length = 0
+  await engine.decide(id, { approve: false, comment: 'El guion dura 40 s', agents: ['story-architect'] })
+  await engine.advance(id)
+  let p = await engine.getProject(id)
+  // Se rehace el guion y lo que venía después en su etapa; la etapa 1 vuelve a pedir aprobación.
+  assert.deepEqual(runs, ['story-architect v2', 'concept-pitch v2'])
+  assert.deepEqual([p.status, p.currentStage], ['waiting_human', 'strategy'])
+  assert.equal(p.steps.find((s) => s.agent === 'story-architect' && s.version === 1)?.feedback, 'El guion dura 40 s')
+  assert.match(p.steps.find((s) => s.agent === 'concept-pitch' && s.version === 1)?.feedback ?? '', /Se devolvió trabajo anterior al tuyo \(Story Architect Agent\)/)
+  assert.equal(p.steps.find((s) => s.agent === 'brief-strategy')?.status, 'done')
+  // Al aprobarla, toda la etapa 2 se actualiza partiendo de sus archivos anteriores.
+  runs.length = 0
+  await engine.decide(id, { approve: true })
+  await engine.advance(id)
+  p = await engine.getProject(id)
+  assert.deepEqual(runs, commercial.stages[1].agents.map((a) => `${a.id} v2`))
+  assert.deepEqual([p.status, p.currentStage], ['waiting_human', 'preproduction'])
+})

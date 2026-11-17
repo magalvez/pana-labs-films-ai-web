@@ -191,7 +191,7 @@ export function App() {
               <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
             </div>
           )}
-          {detail && <Decision detail={detail} stage={stage} events={events} post={post} onSelect={setSelected} onReplay={() => { setReplaying(true); setReplay((n) => n + 1) }} />}
+          {detail && <Decision detail={detail} scheme={scheme} stage={stage} events={events} post={post} onSelect={setSelected} onReplay={() => { setReplaying(true); setReplay((n) => n + 1) }} />}
         </section>
         <aside className="sheet" aria-label="Hoja de llamado">
           {detail ? <Sheet scheme={scheme} detail={detail} events={events} selected={selected} onSelect={setSelected} post={post} /> : <p className="hint">Aquí aparece el detalle de cada agente: qué está haciendo, qué entregó y cuánto ha gastado.</p>}
@@ -278,7 +278,7 @@ function BrandFiles({ brand, act }: { brand: string; act: (fn: () => Promise<unk
   )
 }
 
-function Decision({ detail, stage, events, post: postNow, onSelect, onReplay }: { detail: Detail; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<boolean>; onSelect: (id: string) => void; onReplay: () => void }) {
+function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onReplay }: { detail: Detail; scheme: SchemeT; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<boolean>; onSelect: (id: string) => void; onReplay: () => void }) {
   const [rejecting, setRejecting] = useState(false)
   const [comment, setComment] = useState('')
   const [agents, setAgents] = useState<string[]>([])
@@ -313,6 +313,17 @@ function Decision({ detail, stage, events, post: postNow, onSelect, onReplay }: 
               <fieldset><legend>Quién lo repite (sin marcar, toda la etapa)</legend>
                 {stage.agents.map((a) => <label key={a.id} className="chip"><input type="checkbox" checked={agents.includes(a.id)} onChange={(e) => setAgents((xs) => e.target.checked ? [...xs, a.id] : xs.filter((x) => x !== a.id))} />{a.name.replace(/ Agents?$/, '')}</label>)}
               </fieldset>
+              {scheme.stages.indexOf(stage) > 0 && (
+                <details>
+                  <summary>El problema viene de una etapa anterior</summary>
+                  <p className="note">Marca al agente que debe rehacer su trabajo, por ejemplo quien generó una toma defectuosa. Todo lo que se hizo después se actualiza a partir de lo ya entregado, y las etapas reabiertas vuelven a pasar por su auditor y por tu aprobación. Cuesta más que una devolución dentro de la etapa.</p>
+                  {scheme.stages.slice(0, scheme.stages.indexOf(stage)).map((s) => (
+                    <fieldset key={s.id}><legend>{s.name}</legend>
+                      {s.agents.map((a) => <label key={a.id} className="chip"><input type="checkbox" checked={agents.includes(a.id)} onChange={(e) => setAgents((xs) => e.target.checked ? [...xs, a.id] : xs.filter((x) => x !== a.id))} />{a.name.replace(/ Agents?$/, '')}</label>)}
+                    </fieldset>
+                  ))}
+                </details>
+              )}
             </div>
           )}
         </div>

@@ -22,7 +22,8 @@ const ffmpeg = (...args: string[]) => run('ffmpeg', ['-hide_banner', '-loglevel'
 
 const H264 = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
 /** Lleva cualquier clip al tamaño de trabajo sin deformarlo: escala y rellena con negro. */
-const fit = ([w, h]: readonly [number, number]) => `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${FPS},format=yuv420p`
+const fit = ([w, h]: readonly [number, number]) => `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${FPS},format=yuv420p,settb=AVTB`
+const hexColor = (c: string) => `0x${c.replace('#', '')}`
 
 export async function probe(file: string): Promise<Measurements> {
   const { stdout } = await run('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', file])
@@ -52,21 +53,44 @@ export async function probe(file: string): Promise<Measurements> {
 }
 
 /** Imagen reducida para que un agente la mire. De un video saca cuatro cuadros repartidos, en una sola hoja. */
-export async function preview(file: string, out: string, durationSeconds: number | null) {
-  if (durationSeconds) await ffmpeg('-i', file, '-vf', `fps=4/${Math.max(durationSeconds, 0.2)},scale=640:-2,tile=2x2`, '-frames:v', '1', '-q:v', '4', out)
+export async function preview(file: string, out: string, durationSeconds: number | null, window?: { at: number; span: number }) {
+  // Un instante exacto, o cuatro cuadros de un tramo corto: para revisar un defecto sin recortar el video.
+  if (window && window.span > 0) await ffmpeg('-ss', String(window.at), '-t', String(window.span), '-i', file, '-vf', `fps=4/${window.span},scale=640:-2,tile=2x2`, '-frames:v', '1', '-q:v', '4', out)
+  else if (window) await ffmpeg('-ss', String(window.at), '-i', file, '-vf', 'scale=1280:-2', '-frames:v', '1', '-q:v', '3', out)
+  else if (durationSeconds) await ffmpeg('-i', file, '-vf', `fps=4/${Math.max(durationSeconds, 0.2)},scale=640:-2,tile=2x2`, '-frames:v', '1', '-q:v', '4', out)
   else await ffmpeg('-i', file, '-vf', 'scale=1024:1024:force_original_aspect_ratio=decrease', '-frames:v', '1', '-q:v', '4', out)
 }
 
-/** Une los tramos elegidos de cada toma, sin audio, en 16:9. */
-export async function cut(clips: { file: string; start: number; duration: number }[], out: string) {
-  const inputs = clips.flatMap((c) => ['-ss', String(c.start), '-t', String(c.duration), '-i', c.file])
-  const graph = clips.map((_, i) => `[${i}:v]${fit(SIZES['16:9'])}[v${i}]`).join(';') + `;${clips.map((_, i) => `[v${i}]`).join('')}concat=n=${clips.length}:v=1:a=0[v]`
-  await ffmpeg(...inputs, '-filter_complex', graph, '-map', '[v]', '-an', ...H264, out)
+export type Clip = { file: string; start: number; duration: number; /** Segundos de encadenado desde el plano anterior. */ crossfade?: number }
+/**
+ * Une los tramos elegidos de cada toma, sin audio, en 16:9. La duración total es siempre la suma de los tramos:
+ * un encadenado toma su material extra de la cola del plano anterior, no acorta la pieza.
+ */
+export async function cut(clips: Clip[], out: string, fadeOut?: { seconds: number; color: string }) {
+  const tail = (i: number) => clips[i + 1]?.crossfade ?? 0
+  const inputs = clips.flatMap((c, i) => ['-ss', String(c.start), '-t', String(c.duration + tail(i)), '-i', c.file])
+  const graph = clips.map((_, i) => `[${i}:v]${fit(SIZES['16:9'])}[v${i}]`)
+  let last = 'v0'
+  let at = clips[0].duration
+  for (let i = 1; i < clips.length; i++) {
+    const d = clips[i].crossfade ?? 0
+    graph.push(d > 0 ? `[${last}][v${i}]xfade=transition=fade:duration=${d}:offset=${at}[x${i}]` : `[${last}][v${i}]concat=n=2:v=1:a=0,fps=${FPS},settb=AVTB[x${i}]`)
+    last = `x${i}`
+    at += clips[i].duration
+  }
+  if (fadeOut) {
+    graph.push(`[${last}]fade=t=out:st=${Math.max(at - fadeOut.seconds, 0)}:d=${fadeOut.seconds}:color=${hexColor(fadeOut.color)}[faded]`)
+    last = 'faded'
+  }
+  await ffmpeg(...inputs, '-filter_complex', graph.join(';'), '-map', `[${last}]`, '-t', String(at), '-an', ...H264, out)
 }
 
 export type Grade = { contrast: number; saturation: number; brightness: number; gamma: number }
-export async function grade(file: string, out: string, g: Grade) {
-  await ffmpeg('-i', file, '-vf', `eq=contrast=${g.contrast}:saturation=${g.saturation}:brightness=${g.brightness}:gamma=${g.gamma}`, '-an', ...H264, out)
+const eq = (g: Grade) => `eq=contrast=${g.contrast}:saturation=${g.saturation}:brightness=${g.brightness}:gamma=${g.gamma}`
+/** Corrección de color de toda la pieza y, encima, correcciones propias de un tramo: un plano que quedó distinto a los demás. */
+export async function grade(file: string, out: string, g: Grade, segments: (Grade & { from: number; to: number })[] = []) {
+  const chain = [eq(g), ...segments.map((s) => `${eq(s)}:enable='between(t,${s.from},${s.to})'`)].join(',')
+  await ffmpeg('-i', file, '-vf', chain, '-an', ...H264, out)
 }
 
 /** Mezcla pistas en una sola, de duración exacta y normalizada a la sonoridad objetivo. */
@@ -80,7 +104,7 @@ export async function mix(tracks: { file: string; at: number; volume: number }[]
 }
 
 /** Corte + cierre de marca + textos en pantalla + mezcla de audio. La duración la manda el video. */
-export async function master(o: { video: string; endCard?: string; audio?: string; supers: { image: string; start: number; end: number }[]; out: string }) {
+export async function master(o: { video: string; endCard?: string; /** Segundos de encadenado entre el corte y el cierre. No cambia la duración. */ endCardFade?: number; audio?: string; supers: { image: string; start: number; end: number }[]; out: string }) {
   const size = SIZES['16:9']
   const inputs = ['-i', o.video]
   const graph = [`[0:v]${fit(size)}[main]`]
@@ -88,7 +112,10 @@ export async function master(o: { video: string; endCard?: string; audio?: strin
   let last = 'main'
   if (o.endCard) {
     inputs.push('-i', o.endCard)
-    graph.push(`[${n}:v]${fit(size)}[end]`, `[main][end]concat=n=2:v=1:a=0[joined]`)
+    const d = o.endCardFade ?? 0
+    // El encadenado se alimenta del último cuadro del corte, repetido: así la pieza sigue durando corte más cierre.
+    if (d > 0) graph.push(`[${n}:v]${fit(size)}[end]`, `[main]tpad=stop_mode=clone:stop_duration=${d}[held]`, `[held][end]xfade=transition=fade:duration=${d}:offset=${(await probe(o.video)).durationSeconds ?? 0}[joined]`)
+    else graph.push(`[${n}:v]${fit(size)}[end]`, `[main][end]concat=n=2:v=1:a=0[joined]`)
     last = 'joined'
     n++
   }

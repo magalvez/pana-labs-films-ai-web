@@ -116,7 +116,11 @@ export function mediaTools(ctx: ToolContext) {
   }
 
   const tools: any[] = [
-    tool('view_media', 'Mira un archivo de imagen, video o audio. Devuelve sus medidas técnicas (tamaño, duración, sonoridad), su procedencia y, si es imagen o video, lo que se ve: de un video, cuatro cuadros repartidos en el tiempo.', z.object({ path }), async (input, tmp) => {
+    tool('view_media', 'Mira un archivo de imagen, video o audio. Devuelve sus medidas técnicas (tamaño, duración, sonoridad), su procedencia y, si es imagen o video, lo que se ve: de un video, cuatro cuadros repartidos en toda su duración. Para revisar un defecto en un video, pide el instante con `at_seconds` (un cuadro a buen tamaño) o un tramo con `at_seconds` y `span_seconds` (cuatro cuadros seguidos de ese tramo).', z.object({
+      path,
+      at_seconds: z.number().min(0).max(600).optional().describe('Solo video: segundo que quieres ver.'),
+      span_seconds: z.number().min(0.1).max(10).optional().describe('Solo video, junto con at_seconds: duración del tramo a repartir en cuatro cuadros.'),
+    }), async (input, tmp) => {
       const kind = kindOf(input.path)
       if (!kind) throw new Error('view_media es para imágenes, video y audio; lee los textos con read_file')
       const local = await pull(tmp, input.path)
@@ -126,8 +130,12 @@ export function mediaTools(ctx: ToolContext) {
       // Un .mp4 sin imagen (solo audio) no tiene nada que mostrar.
       if (kind === 'audio' || !m.width) return text
       const sheet = join(tmp, 'vista.jpg')
-      await ff.preview(local, sheet, m.durationSeconds)
-      return [{ type: 'text', text }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: (await readFile(sheet)).toString('base64') } }]
+      const at = m.durationSeconds ? input.at_seconds : undefined
+      if (at !== undefined && at >= m.durationSeconds!) throw new Error(`el video dura ${m.durationSeconds} s y pides ver el segundo ${at}`)
+      const window = at === undefined ? undefined : { at, span: Math.min(input.span_seconds ?? 0, m.durationSeconds! - at) }
+      await ff.preview(local, sheet, m.durationSeconds, window)
+      const shown = window ? (window.span > 0 ? ` Cuatro cuadros entre ${window.at} y ${Math.round((window.at + window.span) * 100) / 100} s.` : ` Cuadro del segundo ${window.at}.`) : ''
+      return [{ type: 'text', text: text + shown }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: (await readFile(sheet)).toString('base64') } }]
     }),
   ]
 
@@ -183,36 +191,49 @@ export function mediaTools(ctx: ToolContext) {
 
   const derived = (toolName: string, model: string, inputs: string[], prompt: string | null = null) => ({ tool: toolName, provider: 'servidor', model, prompt, seed: null, inputs, costUsd: 0, license: DERIVED })
 
-  if (has('cut')) tools.push(tool('assemble_cut', 'Une tramos de las tomas elegidas en un solo video de 1920x1080 a 30 fps, sin audio. No incluye el cierre de marca: ese se añade en build_master.', z.object({
-    clips: z.array(z.object({ file: path, start_seconds: seconds(600).default(0), duration_seconds: z.number().min(0.2).max(60) })).min(1).max(40),
+  if (has('cut')) tools.push(tool('assemble_cut', 'Une tramos de las tomas elegidas en un solo video de 1920x1080 a 30 fps, sin audio. No incluye el cierre de marca: ese se añade en build_master. La duración total es la suma de los tramos, con o sin encadenados. No la uses para inspeccionar cuadros: para eso está view_media con at_seconds.', z.object({
+    clips: z.array(z.object({
+      file: path,
+      start_seconds: seconds(600).default(0),
+      duration_seconds: z.number().min(0.2).max(60),
+      crossfade_seconds: z.number().min(0).max(2).default(0).describe('Encadenado desde el plano anterior. 0 es corte directo. El plano anterior necesita ese material de más después de su tramo.'),
+    })).min(1).max(40),
+    fade_out_seconds: z.number().min(0).max(3).default(0).describe('Fundido al final del corte, hacia fade_out_color.'),
+    fade_out_color: hex.default('#000000'),
     filename: z.string().describe('Nombre de salida terminado en .mp4.'),
   }), async (input, tmp) => {
     const name = output(input.filename, '.mp4')
-    const clips = await Promise.all(input.clips.map(async (c) => {
+    if (input.clips[0].crossfade_seconds) throw new Error('el primer plano no tiene plano anterior con el que encadenar')
+    const clips = await Promise.all(input.clips.map(async (c, i) => {
       const file = await pull(tmp, c.file)
       // ffmpeg no avisa si se le pide más de lo que dura la toma: entrega un corte más corto y descuadra todo lo demás.
       const length = (await ff.probe(file)).durationSeconds ?? 0
-      if (c.start_seconds + c.duration_seconds > length + 0.05) throw new Error(`${c.file} dura ${length} s y pides el tramo de ${c.start_seconds} a ${c.start_seconds + c.duration_seconds} s. Ajusta el inicio o la duración`)
-      return { file, start: c.start_seconds, duration: c.duration_seconds }
+      const extra = input.clips[i + 1]?.crossfade_seconds ?? 0
+      if (c.start_seconds + c.duration_seconds + extra > length + 0.05) throw new Error(`${c.file} dura ${length} s y pides el tramo de ${c.start_seconds} a ${c.start_seconds + c.duration_seconds} s${extra ? `, más ${extra} s para el encadenado con el plano siguiente` : ''}. Ajusta el inicio, la duración o el encadenado`)
+      if (c.crossfade_seconds >= c.duration_seconds) throw new Error(`el encadenado de ${c.file} dura tanto como su tramo`)
+      return { file, start: c.start_seconds, duration: c.duration_seconds, crossfade: c.crossfade_seconds }
     }))
     const out = join(tmp, `out-${name}`)
-    await ff.cut(clips, out)
+    await ff.cut(clips, out, input.fade_out_seconds ? { seconds: input.fade_out_seconds, color: input.fade_out_color } : undefined)
     return save(out, name, derived('assemble_cut', 'ffmpeg', input.clips.map((c) => c.file), JSON.stringify(input.clips)))
   }))
 
-  if (has('grade')) tools.push(tool('grade_video', 'Aplica una corrección de color uniforme a un video. Los valores neutros son contraste 1, saturación 1, brillo 0 y gamma 1.', z.object({
+  const gradeValues = { contrast: z.number().min(0.5).max(1.6).default(1), saturation: z.number().min(0).max(2).default(1), brightness: z.number().min(-0.3).max(0.3).default(0), gamma: z.number().min(0.6).max(1.6).default(1) }
+  if (has('grade')) tools.push(tool('grade_video', 'Corrige el color de un video en una sola pasada. Los valores generales se aplican a toda la pieza; `segments` añade encima una corrección propia para un tramo, por ejemplo un plano que quedó más saturado que los demás. Los valores neutros son contraste 1, saturación 1, brillo 0 y gamma 1. La corrección es de cuadro completo: no hay máscaras para tratar solo una zona.', z.object({
     input: path,
-    contrast: z.number().min(0.5).max(1.6).default(1),
-    saturation: z.number().min(0).max(2).default(1),
-    brightness: z.number().min(-0.3).max(0.3).default(0),
-    gamma: z.number().min(0.6).max(1.6).default(1),
+    ...gradeValues,
+    segments: z.array(z.object({ from_seconds: seconds(600), to_seconds: seconds(600), ...gradeValues })).max(20).default([]).describe('Tramos de la pieza con corrección propia, según los tiempos de edit.json.'),
     filename: z.string().describe('Nombre de salida terminado en .mp4.'),
   }), async (input, tmp) => {
     const name = output(input.filename, '.mp4')
     const out = join(tmp, `out-${name}`)
     const g = { contrast: input.contrast, saturation: input.saturation, brightness: input.brightness, gamma: input.gamma }
-    await ff.grade(await pull(tmp, input.input), out, g)
-    return save(out, name, derived('grade_video', 'ffmpeg', [input.input], JSON.stringify(g)))
+    const segments = input.segments.map((s) => {
+      if (s.to_seconds <= s.from_seconds) throw new Error(`el tramo de ${s.from_seconds} a ${s.to_seconds} s termina antes de empezar`)
+      return { from: s.from_seconds, to: s.to_seconds, contrast: s.contrast, saturation: s.saturation, brightness: s.brightness, gamma: s.gamma }
+    })
+    await ff.grade(await pull(tmp, input.input), out, g, segments)
+    return save(out, name, derived('grade_video', 'ffmpeg', [input.input], JSON.stringify({ ...g, segments })))
   }))
 
   if (has('mix')) tools.push(tool('mix_audio', 'Mezcla locución, música y efectos en una sola pista de la duración total de la pieza, cierre incluido, normalizada a -14 LUFS. `volume` 1 deja la pista como está; la música bajo la voz suele ir entre 0.15 y 0.35.', z.object({
@@ -256,6 +277,7 @@ export function mediaTools(ctx: ToolContext) {
   if (has('master')) tools.push(tool('build_master', 'Construye la pieza final: el corte, luego el cierre de marca, con los textos en pantalla superpuestos y la mezcla de audio. La duración final es la del corte más la del cierre. Los tiempos de los textos se cuentan desde el inicio de la pieza.', z.object({
     video: path.describe('El corte ya corregido de color.'),
     end_card: path.optional(),
+    end_card_fade_seconds: z.number().min(0).max(2).default(0).describe('Encadenado entre el último plano y el cierre. No cambia la duración.'),
     audio: path.optional().describe('La mezcla de audio de toda la pieza.'),
     supers: z.array(z.object({ text: z.string().min(1).max(80), start_seconds: seconds(600), end_seconds: seconds(600), position: z.enum(['top', 'center', 'bottom']).default('bottom'), color: hex.default('#ffffff') })).max(20).default([]),
     filename: z.string().describe('Nombre de salida terminado en .mp4.'),
@@ -271,7 +293,7 @@ export function mediaTools(ctx: ToolContext) {
       supers.push({ image, start: s.start_seconds, end: s.end_seconds })
     }
     const out = join(tmp, `out-${name}`)
-    await ff.master({ video: await pull(tmp, input.video), endCard: input.end_card && (await pull(tmp, input.end_card)), audio: input.audio && (await pull(tmp, input.audio)), supers, out })
+    await ff.master({ video: await pull(tmp, input.video), endCard: input.end_card && (await pull(tmp, input.end_card)), endCardFade: input.end_card_fade_seconds, audio: input.audio && (await pull(tmp, input.audio)), supers, out })
     return save(out, name, derived('build_master', 'ffmpeg + Remotion', [input.video, input.end_card, input.audio].filter((p): p is string => Boolean(p)), JSON.stringify(input.supers)))
   }))
 
@@ -291,7 +313,7 @@ export function mediaTools(ctx: ToolContext) {
 }
 
 const SAY: Record<string, (i: any) => string> = {
-  view_media: (i) => `Mirando ${i.path}`,
+  view_media: (i) => `Mirando ${i.path}${i.at_seconds !== undefined ? ` en el segundo ${i.at_seconds}` : ''}`,
   list_provenance: () => 'Revisando la procedencia de los archivos',
   generate_image: (i) => `Generando la imagen ${i.filename}`,
   generate_video: (i) => `Generando el video ${i.filename} (${i.quality === 'final' ? 'toma final' : 'prueba'}, ${i.duration_seconds} s)`,
