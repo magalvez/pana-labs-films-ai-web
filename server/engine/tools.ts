@@ -72,6 +72,8 @@ export function mediaTools(ctx: ToolContext) {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           if (/^Falta |no está instalado/.test(message)) ctx.abort(err as Error)
+          // La cuenta del proveedor no deja generar: ningún agente puede arreglarlo, así que se detiene y se avisa a la persona.
+          else if (/^(fal\.ai|ElevenLabs) respondió (401|402|403)\b|Exhausted balance/i.test(message)) ctx.abort(new Error(`El proveedor rechazó la generación por un problema de la cuenta (saldo agotado o clave sin permiso). Recarga el saldo o revisa la clave y pulsa Reintentar: lo ya generado se conserva. Detalle: ${message}`))
           return `Error: ${message}`
         } finally {
           await rm(tmp, { recursive: true, force: true })
