@@ -76,6 +76,13 @@ test('un proyecto conserva el modo con el que se creó aunque cambie el interrup
   assert.equal((await engine.getProject(real.id)).simulation, false)
 })
 
+test('el tope se puede subir sin pausar, nunca por debajo de lo gastado', async () => {
+  const { engine } = await setup()
+  const { id } = await engine.createProject({ name: 'Tope', brief: 'x', budgetCap: 5 })
+  assert.equal((await engine.setBudget(id, 12)).budget_cap, 12)
+  await assert.rejects(engine.setBudget(id, 0), /mayor que lo ya gastado/)
+})
+
 test('un rechazo del auditor relanza solo al agente señalado', async () => {
   const { engine } = await setup(simRunner({ rejectOnce: ['production'] }))
   await engine.setSettings({ humanReview: false })

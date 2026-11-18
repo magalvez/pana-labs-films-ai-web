@@ -176,6 +176,11 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
   })
   app.post('/api/projects/:id/pause', async (c) => (await engine.pause(c.req.param('id')), c.json(ok)))
   app.post('/api/projects/:id/cancel', async (c) => (await engine.cancel(c.req.param('id')), c.json(ok)))
+  app.post('/api/projects/:id/budget', async (c) => {
+    const budgetCap = Number((await json(c)).budgetCap)
+    if (!(budgetCap > 0 && budgetCap <= 10_000)) throw new Error('El tope de presupuesto debe estar entre 1 y 10 000 dólares')
+    return c.json(await engine.setBudget(c.req.param('id'), budgetCap))
+  })
   app.post('/api/projects/:id/resume', async (c) => {
     const { budgetCap } = await json(c)
     if (budgetCap !== undefined && !(Number(budgetCap) > 0 && Number(budgetCap) <= 10_000)) throw new Error('El tope de presupuesto debe estar entre 1 y 10 000 dólares')

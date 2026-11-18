@@ -41,6 +41,8 @@ export function createEngine(opts: {
   reporter?: Reporter
 }) {
   const { db, files, schemes, runner } = opts
+  // El proyecto tal como lo ve el agente que está corriendo: subir el tope a mitad de trabajo se refleja aquí.
+  const live = new Map<string, Project>()
   const maxAuditRetries = opts.maxAuditRetries ?? 2
   const maxContractRetries = opts.maxContractRetries ?? 2
   const active = new Map<string, Promise<void>>()
@@ -220,6 +222,7 @@ export function createEngine(opts: {
       const fresh = attempt === 0 ? p : await project(p.id)
       if (fresh.spent >= fresh.budget_cap) return false
       await emit(p.id, 'agent.started', { stage: stage.id, agent: agent.id, version, feedback })
+      live.set(p.id, fresh)
       const result = await runner.runAgent({
         project: fresh, stage, agent, version, dir, to, files, brand,
         inputs: inputsFor(p.id, latest, scheme, stage, agent),
@@ -265,6 +268,7 @@ export function createEngine(opts: {
   async function audit(p: Project, scheme: Scheme, stage: StageDef, row: StageRow, latest: Map<string, StepRow>) {
     const auditor = stage.auditor.id
     await emit(p.id, 'audit.started', { stage: stage.id, auditor })
+    live.set(p.id, p)
     const verdict = await runner.runAuditor({
       project: p, stage, files, brand: await brandOf(p),
       deliverables: inputsFor(p.id, latest, scheme, stage).filter((i) => i.stage === stage.id),
@@ -427,6 +431,17 @@ export function createEngine(opts: {
 
   async function pause(id: string) {
     if (!(await move(id, 'running', 'paused', 'manual'))) throw new Error('Solo se puede pausar un proyecto en marcha')
+  }
+
+  /** Cambia el tope sin detener nada. El agente que esté trabajando lo nota en su siguiente generación. */
+  async function setBudget(id: string, budgetCap: number) {
+    const p = await project(id)
+    if (p.status === 'done' || p.status === 'cancelled') throw new Error('El proyecto ya terminó')
+    if (budgetCap <= p.spent) throw new Error(`El tope nuevo debe ser mayor que lo ya gastado ($${p.spent.toFixed(2)})`)
+    await db('UPDATE projects SET budget_cap = ? WHERE id = ?', budgetCap, id)
+    const working = live.get(id)
+    if (working) working.budget_cap = budgetCap
+    return project(id)
   }
 
   async function resume(id: string, budgetCap?: number) {
@@ -653,7 +668,7 @@ export function createEngine(opts: {
     return { projectId: p.id, name: p.name, brand: p.brand, expiresAt: share.expires_at as string, report: await clientReport(p.id), videos: await clientVideos(p.id) }
   }
 
-  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
+  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
 }
 
 export type Engine = ReturnType<typeof createEngine>

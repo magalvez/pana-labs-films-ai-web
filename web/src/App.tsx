@@ -60,6 +60,7 @@ export function App() {
   const pollNow = useRef(() => {})
   const newDialog = useRef<HTMLDialogElement>(null)
   const settingsDialog = useRef<HTMLDialogElement>(null)
+  const budgetDialog = useRef<HTMLDialogElement>(null)
 
   // Cuántas acciones siguen esperando respuesta del servidor: mientras haya alguna, la claqueta avisa.
   const [loading, setLoading] = useState(0)
@@ -92,7 +93,7 @@ export function App() {
     if (!ready) return
     void act(async () => {
       const [s, st, ps, bs, who] = await Promise.all([api<SchemeT[]>('/schemes'), api<Settings>('/settings'), api<Project[]>('/projects'), api<Brand[]>('/brands'), api<{ email: string; role: 'admin' | 'member' }>('/me')])
-      setSchemes(s); setSettings(st); setProjects(ps); setBrands(bs); setMe(who); setPid(ps[0]?.id ?? null)
+      setSchemes(s); setSettings(st); setProjects(ps); setBrands(bs); setMe(who); setPid((current) => (ps.some((p) => p.id === current) ? current : ps[0]?.id ?? null))
     })
   }, [act, ready])
 
@@ -175,15 +176,16 @@ export function App() {
             })}
           </ol>
           {detail && (
-            <>
+            <div className="readout">
               <div className="field"><span>Estado</span><strong className={`status ${detail.status}`}>{STATUS[detail.status]}</strong></div>
               <div className="field"><span>Modo</span><strong>{detail.simulation ? 'Simulación, no gasta' : 'Real'}</strong></div>
-              <div className="field budget">
+              <div className={detail.spent >= detail.budget_cap * 0.85 ? 'field budget near' : 'field budget'}>
                 <span>Presupuesto</span>
                 <strong>{usd(detail.spent)} de {usd(detail.budget_cap)}</strong>
+                {!['done', 'cancelled'].includes(detail.status) && <button className="raise" aria-label="Subir el tope de presupuesto" title="Subir el tope de presupuesto" onClick={() => budgetDialog.current?.showModal()}>+ Tope</button>}
                 <progress value={Math.min(detail.spent, detail.budget_cap)} max={detail.budget_cap} />
               </div>
-            </>
+            </div>
           )}
         </div>
         )}
@@ -236,6 +238,17 @@ export function App() {
           <p className="note">El motor se detiene y te pregunta cuando el gasto alcanza este tope.</p>
           <div className="dialog-actions"><button type="button" onClick={() => newDialog.current?.close()}>Cancelar</button><button className="primary">Crear proyecto</button></div>
         </form>
+      </dialog>
+
+      <dialog ref={budgetDialog}>
+        {detail && (
+          <form method="dialog" key={detail.budget_cap} onSubmit={(e) => { void post('budget', { budgetCap: Number(new FormData(e.currentTarget).get('budgetCap')) }) }}>
+            <h2>Subir el tope de presupuesto</h2>
+            <p>Van {usd(detail.spent)} gastados de {usd(detail.budget_cap)}. El cambio vale de inmediato: los agentes siguen trabajando sin pausa.</p>
+            <label>Tope nuevo en dólares<input name="budgetCap" type="number" required min={Math.floor(detail.spent) + 1} max={10000} step="1" defaultValue={Math.ceil(detail.budget_cap * 1.5)} /></label>
+            <div className="dialog-actions"><button type="button" onClick={() => budgetDialog.current?.close()}>Cancelar</button><button className="primary">Guardar tope</button></div>
+          </form>
+        )}
       </dialog>
 
       <dialog ref={settingsDialog}>

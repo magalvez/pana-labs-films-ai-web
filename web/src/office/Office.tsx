@@ -8,14 +8,18 @@ type Props = { scheme: SchemeT; events: Ev[]; replay: number; selected: string |
 export function Office({ scheme, events, replay, selected, onSelect, onReplayEnd }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const calm = useMemo(() => matchMedia('(prefers-reduced-motion: reduce)').matches, [])
-  const world = useMemo(() => createWorld(scheme, calm), [scheme, calm])
-  const live = useRef({ events, cursor: 0, replaying: false, selected, hover: null as string | null })
+  // El mundo depende de qué esquema es, no de qué objeto lo trae: al renovarse la sesión llega una copia idéntica.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const world = useMemo(() => createWorld(scheme, calm), [scheme.id, calm])
+  const live = useRef({ events, cursor: 0, replaying: false, selected, hover: null as string | null, world })
   live.current.events = events
   live.current.selected = selected
 
   // Eventos nuevos: el historial viejo se aplica sin animar, lo reciente se anima.
   useEffect(() => {
     const s = live.current
+    // Un mundo nuevo nace vacío: hay que volver a contarle todo desde el primer evento.
+    if (s.world !== world) { s.world = world; s.cursor = 0 }
     if (s.replaying) return
     let stale = false
     while (s.cursor < events.length) {
