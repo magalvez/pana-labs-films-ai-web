@@ -27,7 +27,6 @@ export const commercial: Scheme = {
       gate: 'Storyboard, estilo y presupuesto',
       auditor: { id: 'preproduction-auditor', name: 'Pre-production Auditor' },
       agents: [
-        a('producer-budget', 'Producer / Budget Agent', 'budget.json'),
         a('art-director', 'Art Director Agent', 'art-direction.md'),
         t(['image'], 'character-talent-design', 'Character & Talent Design Agent', 'characters.md'),
         t(['image'], 'world-location', 'World & Location Agent', 'locations.md'),
@@ -35,6 +34,8 @@ export const commercial: Scheme = {
         // El storyboard en imágenes es la aprobación barata: cada cuadro es la imagen de partida de su toma.
         t(['image'], 'storyboard-previs', 'Storyboard & Previs Agent', 'shots.json', 'storyboard.md'),
         a('legal-compliance', 'Legal & Compliance Agent', 'legal-review.md'),
+        // El presupuesto cierra la etapa: ya existen los planos y ya se sabe lo gastado. Al principio solo podía adivinar.
+        t(['provenance'], 'producer-budget', 'Producer / Budget Agent', 'budget.json'),
       ],
     },
     {

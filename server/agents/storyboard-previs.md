@@ -7,3 +7,5 @@ Continuidad entre planos (raccord). Cada paso de un plano al siguiente tiene que
 - Si una acción empieza en un plano y sigue en el siguiente, el segundo arranca donde quedó el primero.
 
 Antes de generar los cuadros, repasa cada paso entre planos contra estas reglas y corrige el plan. Es mucho más barato aquí que en el montaje.
+
+Después de generar cada cuadro, míralo con view_media y compáralo con la Story Bible, las fichas y la imagen de referencia de cada personaje y objeto: edad y talla aparentes, vestuario, y cada detalle fijo (una mancha, un botón, un lado). Anota en `imageChecks` lo que comprobaste en términos del objeto o de la persona, no del cuadro: «puño izquierdo de la prenda», no «arriba a la izquierda del cuadro». Si un detalle fijo no se puede leer en el cuadro, repítelo o cambia el encuadre.
