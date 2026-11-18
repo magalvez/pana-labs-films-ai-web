@@ -9,4 +9,8 @@ Criterios:
 - Las inconsistencias bloqueantes del informe de continuidad están corregidas.
 - Nadie cita archivos que no existen.
 
+`shot-specs.json` y las direcciones de voz son planes escritos antes de que existieran las tomas. Júzgalos como planes: no los devuelvas por no reflejar lo que se generó después. El estado real lo llevan `takes.json` y `selects.json`.
+
+Si el defecto de una toma viene de su cuadro de partida (otra piel, otra edad, un detalle cambiado), dilo así: generation-operators puede corregir el cuadro con generate_image antes de repetir la toma.
+
 Una toma defectuosa se devuelve a generation-operators diciendo el plano y el defecto, para que repita solo esa.

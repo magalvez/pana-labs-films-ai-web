@@ -70,6 +70,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
   /** `charge` registra el costo de cada respuesta en el momento: si el agente falla después, lo gastado ya está contado. */
   async function loop(system: string, prompt: string, tools: any[], say: (t: string) => void, limitMs: number, stop: Stop, cancelled: AbortSignal, charge: (usd: number) => Promise<void>) {
     const timeout = AbortSignal.timeout(limitMs)
+    const halt = AbortSignal.any([timeout, stop.controller.signal, cancelled])
     let last: Anthropic.Beta.BetaMessage | undefined
     try {
       const runner = client.beta.messages.toolRunner(
@@ -77,15 +78,17 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
         // `cache_control` marca el final de cada petición como punto de caché. Un agente da decenas de pasos y en cada uno
         // reenvía todo lo anterior, imágenes incluidas: con la caché, esa parte repetida se cobra como lectura.
         { model: MODEL, max_tokens: 64000, system, tools, max_iterations: MAX_STEPS, stream: true, cache_control: { type: 'ephemeral' }, messages: [{ role: 'user', content: prompt }] },
-        { signal: AbortSignal.any([timeout, stop.controller.signal, cancelled]) },
+        { signal: halt },
       )
-      for await (const stream of runner) {
+      // El límite también vale mientras corre una herramienta: una descarga o un proceso colgado no deja al agente parado para siempre.
+      const halted = new Promise<never>((_, reject) => halt.addEventListener('abort', () => reject(halt.reason), { once: true }))
+      await Promise.race([halted, (async () => { for await (const stream of runner) {
         const message = await stream.finalMessage()
         last = message
         const u = message.usage
         await charge((u.input_tokens * PRICE.input + u.output_tokens * PRICE.output + (u.cache_read_input_tokens ?? 0) * PRICE.cacheRead + (u.cache_creation_input_tokens ?? 0) * PRICE.cacheWrite) / 1e6)
         for (const block of message.content) if (block.type === 'tool_use') say(block.name === 'read_file' ? `Leyendo ${(block.input as any).path}` : block.name === 'write_file' ? `Escribiendo ${(block.input as any).name}` : (announce(block.name, block.input) ?? 'Emitiendo veredicto'))
-      }
+      } })()])
     } catch (err) {
       // Una herramienta detuvo al agente por algo que él no puede arreglar: ese es el error que importa.
       if (stop.error) throw stop.error
@@ -182,7 +185,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
 - "PARA LA PERSONA" es solo para lo que ningún agente de esta etapa puede corregir. Si la Story Bible o el brief ya deciden el asunto y un agente de la etapa tiene la herramienta, asígnaselo en este mismo veredicto.
 - Cuando devuelvas a un agente un archivo que otros documentos de la etapa citan (una referencia de personaje, un cuadro, una cifra), incluye en el mismo veredicto a los agentes que tendrán que actualizar esas citas, diciéndoles qué va a cambiar. Los agentes devueltos corren en el orden de la etapa.
 - En un reintento, comprueba primero lo que pediste la vez anterior. No añadas exigencias nuevas de gusto sobre trabajo que ya habías dado por bueno.\n- Termina llamando a submit_verdict.`
-      const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}\n\nEntregables de la etapa ${stage.name}:\n${await describe(files, project.id, deliverables)}\n\nAgentes de la etapa y lo que cada uno puede hacer:\n${stage.agents.map((a) => `- ${a.id}: escribe ${a.deliverables.join(', ')}${a.tools?.length ? `; herramientas: ${a.tools.join(', ')}` : '; sin herramientas de generación ni montaje'}`).join('\n')}`
+      const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}. Estas cifras son las del sistema y mandan sobre las que digan los documentos.\n\nEntregables de la etapa ${stage.name}:\n${await describe(files, project.id, deliverables)}\n\nAgentes de la etapa y lo que cada uno puede hacer:\n${stage.agents.map((a) => `- ${a.id}: escribe ${a.deliverables.join(', ')}${a.tools?.length ? `; herramientas: ${a.tools.join(', ')}` : '; sin herramientas de generación ni montaje'}`).join('\n')}`
       await loop(system, prompt, [readTool(files, project.id), verdictTool, ...media], say, mediaTimeoutMs, stop, signal, async (usd) => { used += usd; await spend(usd) })
       if (!verdict) throw new Error(`${stage.auditor.name} terminó sin emitir veredicto.`)
       return { ...verdict, costUsd: 0 }
