@@ -405,9 +405,10 @@ function Sheet({ scheme, detail, events, selected, onSelect, post }: { scheme: S
     return m
   }, [events])
 
-  if (!selected || selected === 'creative-lead' || selected === 'orchestrator') return (
+  if (!selected || selected === 'creative-lead' || selected === 'creative-manager' || selected === 'orchestrator') return (
     <>
       {selected === 'creative-lead' && <p className="hint">Eres tú. Las decisiones que te esperan aparecen debajo de la oficina.</p>}
+      {selected === 'creative-manager' && <p className="hint">El Creative Manager acompaña al Creative Lead en el Mando. Toca la raqueta dorada para verlos jugar.</p>}
       {selected === 'orchestrator' && <p className="hint">El Orchestrator es el motor: lanza a cada agente, llama al auditor, controla el gasto y te avisa cuando te necesita.</p>}
       <h2>Reparto</h2>
       {scheme.stages.map((s) => (

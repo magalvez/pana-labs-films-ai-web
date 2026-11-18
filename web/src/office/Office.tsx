@@ -61,20 +61,21 @@ export function Office({ scheme, events, replay, selected, onSelect, onReplayEnd
     return () => cancelAnimationFrame(raf)
   }, [world])
 
-  const at = (e: React.MouseEvent) => {
+  const point = (e: React.MouseEvent) => {
     const r = canvas.current!.getBoundingClientRect()
-    return world.actorAt(((e.clientX - r.left) / r.width) * W, ((e.clientY - r.top) / r.height) * H)
+    return [((e.clientX - r.left) / r.width) * W, ((e.clientY - r.top) / r.height) * H] as const
   }
+  const at = (e: React.MouseEvent) => world.actorAt(...point(e))
 
   return (
     <canvas
       ref={canvas}
       className="office"
       role="img"
-      aria-label="Oficina de agentes. La lista de agentes del panel lateral ofrece la misma información."
-      onMouseMove={(e) => { const a = at(e); live.current.hover = a?.id ?? null; e.currentTarget.style.cursor = a ? 'pointer' : 'default' }}
-      onMouseLeave={() => { live.current.hover = null }}
-      onClick={(e) => onSelect(at(e)?.id ?? null)}
+      aria-label="Oficina de agentes. La estatua de la raqueta del Mando abre un partido de tenis decorativo. La lista de agentes del panel lateral ofrece la misma información."
+      onMouseMove={(e) => { world.hot = world.hotspot(...point(e)); const a = world.hot ? null : at(e); live.current.hover = a?.id ?? null; e.currentTarget.style.cursor = a || world.hot ? 'pointer' : 'default' }}
+      onMouseLeave={() => { live.current.hover = null; world.hot = null }}
+      onClick={(e) => { if (world.hotspot(...point(e))) world.toggleTennis(); else onSelect(at(e)?.id ?? null) }}
     />
   )
 }

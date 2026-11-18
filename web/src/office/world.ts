@@ -1,4 +1,6 @@
 // La oficina: estado derivado de los eventos del motor y su dibujo en pixel art.
+import { ROOM, createTennis, type Tennis } from './tennis'
+
 export type Ev = { id: number; projectId: string; ts: string; type: string; data: any }
 export type AgentT = { id: string; name: string; deliverables: string[] }
 export type StageT = { id: string; name: string; gate: string; auditor: { id: string; name: string }; agents: AgentT[] }
@@ -10,7 +12,7 @@ const RW = 216, RH = 176, LANE = 202, BOTTOM = 154
 
 type Pt = { x: number; y: number }
 type Door = 'east' | 'south' | 'west'
-type Look = { skin: string; hair: string; style: number; shirt: string }
+type Look = { skin: string; hair: string; style: number; shirt: string; cap?: string }
 export type Actor = {
   id: string; name: string; kind: 'agent' | 'auditor' | 'orch' | 'human'; room: Room
   seat: Pt; aisle: number; x: number; y: number
@@ -55,7 +57,7 @@ function shade(hex: string, k: number) {
 function buildFrames(look: Look, kind: Actor['kind']) {
   const pal: Record<string, string> = {
     o: '#1a1420', h: look.hair, H: shade(look.hair, 0.35), s: look.skin, b: shade(look.skin, -0.12), e: '#1b1d26',
-    c: look.shirt, C: shade(look.shirt, -0.22), p: '#2f3650', f: '#11131c', g: '#e8eef7', t: '#d6453d', k: '#1b1d26', r: '#d6453d', R: '#f0736b',
+    c: look.shirt, C: shade(look.shirt, -0.22), p: '#2f3650', f: '#11131c', g: '#e8eef7', t: '#d6453d', k: '#1b1d26', r: look.cap ?? '#d6453d', R: shade(look.cap ?? '#d6453d', 0.3),
   }
   let head = HEADS[look.style].map((r) => [...r])
   const body = BODY.map((r) => [...r])
@@ -71,9 +73,12 @@ function buildFrames(look: Look, kind: Actor['kind']) {
   }
   const legs = (rows: string[]) => rows.map((r) => [...r])
   const closed = head.map((r, y) => (y === 6 ? r.map((ch) => (ch === 'e' ? 's' : ch)) : r))
+  // De espaldas: la cara se cubre de pelo. Lo usa quien juega al tenis en el lado de abajo.
+  const back = head.map((r) => r.map((ch) => ('seb'.includes(ch) ? 'h' : ch)))
   return {
     idle: make([...head, ...body, ...legs(STAND)]), blink: make([...closed, ...body, ...legs(STAND)]),
     stepA: make([...head, ...body, ...legs(STEP)]), stepB: make([...head, ...body, ...legs(flip(STEP))]),
+    back: make([...back, ...body, ...legs(STAND)]), backA: make([...back, ...body, ...legs(STEP)]), backB: make([...back, ...body, ...legs(flip(STEP))]),
   }
 }
 
@@ -91,17 +96,21 @@ export function createWorld(scheme: SchemeT, calm = false) {
   let stamps: { x: number; y: number; ok: boolean; life: number }[] = []
   let flying: { x0: number; y0: number; x1: number; y1: number; t: number; dur: number; big: boolean; done?: () => void }[] = []
   let now = 0, shake = 0
-  const world = { speed: 1, status: 'running' as string, actors, apply, settle, reset, update, draw, actorAt }
+  // El partido del Mando: `mix` va de 0 (oficina) a 1 (cancha) mientras dura la transición.
+  let tennisOn = false, mix = 0, game: Tennis | null = null
+  const STATUE = { x: 190, y: 96 }, EXIT = { x: 6, y: 157, w: 41, h: 13 }
+  const PLAYERS = ['creative-lead', 'creative-manager']
+  const world = { speed: 1, status: 'running' as string, hot: null as string | null, actors, apply, settle, reset, update, draw, actorAt, hotspot, toggleTennis }
 
   function addRoom(id: string, name: string, index: number) {
     const s = SLOTS[index]
     rooms.set(id, { id, name, index, ox: s.c * RW, oy: s.r * RH, floor: s.floor, accent: s.accent, door: s.door, lit: 0, litTo: 0, open: 0, openTo: 0, approved: false })
     return rooms.get(id)!
   }
-  function addActor(id: string, name: string, kind: Actor['kind'], room: Room, seat: Pt, aisle: number) {
+  function addActor(id: string, name: string, kind: Actor['kind'], room: Room, seat: Pt, aisle: number, cap?: string) {
     const h = hash(id)
     const shirt = kind === 'auditor' ? '#2a2f3d' : kind === 'orch' ? '#f2b632' : kind === 'human' ? '#efe6d0' : room.accent
-    const look = { skin: SKINS[h % 5], hair: HAIRS[(h >>> 3) % 7], style: (h >>> 6) % 4, shirt }
+    const look = { skin: SKINS[h % 5], hair: HAIRS[(h >>> 3) % 7], style: (h >>> 6) % 4, shirt: cap ? '#dfeaff' : shirt, cap }
     actors.set(id, { id, name, kind, room, seat, aisle, x: seat.x, y: seat.y, state: 'idle', bubble: null, queue: [], carrying: false, papers: 0, phase: (h % 100) / 10, look, frames: buildFrames(look, kind) })
   }
   function build() {
@@ -110,6 +119,7 @@ export function createWorld(scheme: SchemeT, calm = false) {
     mando.lit = mando.litTo = mando.open = mando.openTo = 1
     addActor('orchestrator', 'Orchestrator / Executive Producer Agent', 'orch', mando, { x: 108, y: 96 }, 82)
     addActor('creative-lead', 'Creative Lead (tú)', 'human', mando, { x: 56, y: 148 }, 148)
+    addActor('creative-manager', 'Creative Manager', 'human', mando, { x: 160, y: 108 }, 108, '#3d7bd6')
     scheme.stages.slice(0, 5).forEach((stage, si) => {
       const room = addRoom(stage.id, stage.name, si + 1)
       const n = stage.agents.length, top = n > 4 ? Math.ceil(n / 2) : n
@@ -202,9 +212,50 @@ export function createWorld(scheme: SchemeT, calm = false) {
     particles = []; floats = []; stamps = []; flying = []
   }
 
+  /** Qué hay bajo el puntero que no es un personaje: la estatua, o el botón para volver a la oficina. */
+  function hotspot(x: number, y: number) {
+    if (tennisOn && x >= EXIT.x && x < EXIT.x + EXIT.w && y >= EXIT.y && y < EXIT.y + EXIT.h) return 'exit'
+    return Math.abs(x - STATUE.x) < 10 && y > STATUE.y - 32 && y < STATUE.y + 3 ? 'statue' : null
+  }
+  /** Convierte el Mando en cancha, o lo devuelve a oficina. El partido sigue hasta que se vuelva a llamar. */
+  function toggleTennis() {
+    tennisOn = !tennisOn
+    const orch = actors.get('orchestrator')
+    if (tennisOn) {
+      game = createTennis(PLAYERS.map((id) => { const a = actors.get(id)!; return { x: a.x, y: a.y } }), {
+        call: (text) => say(actors.get('orchestrator'), text),
+        burst: (x, y, n) => confetti(x, y, n, ['#f2b632', '#efe6d0', '#e9f24a']),
+      })
+      say(orch, '¡A la cancha!')
+    } else {
+      say(orch, 'De vuelta al trabajo')
+      for (const id of [...PLAYERS, 'orchestrator']) { const a = actors.get(id); if (a) { a.x = a.seat.x; a.y = a.seat.y } }
+    }
+    confetti(STATUE.x, STATUE.y - 20, 30, ['#f2b632', '#ffe08a', '#c1582f'])
+    if (!calm) shake = 0.3
+  }
+  /** Los personajes del Mando siguen al partido: así sus globos y el clic caen donde están jugando. */
+  function followGame() {
+    if (!game) return
+    PLAYERS.forEach((id, i) => { const a = actors.get(id); if (a) { a.x = game!.players[i].x; a.y = game!.players[i].y } })
+    const orch = actors.get('orchestrator')
+    if (orch) { orch.x = game.umpire.x; orch.y = game.umpire.y }
+  }
+
   function update(dt: number) {
     const k = dt * world.speed
     now += k
+    mix = Math.max(0, Math.min(1, mix + (tennisOn ? dt : -dt) / 0.9))
+    if (mix > 0 && game) {
+      game.update(dt)
+      // Polvo de ladrillo en el borde del telón mientras se abre o se cierra.
+      if (mix < 1 && !calm) for (let i = 0; i < 3; i++) {
+        const a = Math.PI * (0.5 + Math.random()), rad = mix * mix * (3 - 2 * mix) * 250
+        const x = STATUE.x + Math.cos(a) * rad, y = STATUE.y - 12 + Math.sin(a) * rad * (Math.random() < 0.5 ? 1 : -1)
+        if (x > ROOM.x && x < ROOM.x + ROOM.w && y > ROOM.y && y < ROOM.y + ROOM.h) particles.push({ x, y, vx: (Math.random() - 0.5) * 40, vy: -20 - Math.random() * 30, life: 0.5, color: Math.random() < 0.5 ? '#e0895c' : '#c1582f' })
+      }
+    }
+    if (mix <= 0) game = null
     shake = Math.max(0, shake - dt)
     for (const r of rooms.values()) { r.lit += (r.litTo - r.lit) * Math.min(1, k * 3); r.open += (r.openTo - r.open) * Math.min(1, k * 4) }
     for (const a of actors.values()) {
@@ -217,6 +268,7 @@ export function createWorld(scheme: SchemeT, calm = false) {
         if (dist <= left) { a.x = p.x; a.y = p.y; q.pts.shift(); left -= dist } else { a.x += (dx / dist) * left; a.y += (dy / dist) * left; left = 0 }
       }
     }
+    if (tennisOn) followGame()
     for (const p of particles) { p.x += p.vx * k; p.y += p.vy * k; p.vy += 160 * k; p.life -= k }
     particles = particles.filter((p) => p.life > 0)
     for (const f of floats) { f.y -= 10 * k; f.life -= k }
@@ -334,6 +386,54 @@ export function createWorld(scheme: SchemeT, calm = false) {
     c.fillStyle = b.bad ? '#8f1d18' : INK; c.fillText(b.text, x + 4, y + 2)
   }
 
+  /** La cancha se descubre con un telón circular que nace en la estatua. */
+  function drawCourt(c: C, t: number) {
+    if (mix <= 0 || !game) return
+    const lead = actors.get(PLAYERS[0]), manager = actors.get(PLAYERS[1]), orch = actors.get('orchestrator')
+    if (!lead || !manager) return
+    const ease = mix * mix * (3 - 2 * mix)
+    c.save()
+    c.beginPath(); c.rect(ROOM.x, ROOM.y, ROOM.w, ROOM.h); c.clip()
+    c.beginPath(); c.arc(STATUE.x, STATUE.y - 12, ease * 250, 0, Math.PI * 2); c.clip()
+    const f = lead.frames, m = manager.frames
+    game.draw(c, t, [{ idle: f.back, stepA: f.backA, stepB: f.backB }, m], () => { if (orch) c.drawImage(orch.frames.idle, Math.round(game!.umpire.x) - 8, Math.round(game!.umpire.y) - 21) })
+    // Quien espera una decisión sigue avisando, aunque esté jugando.
+    if (lead.state === 'blocked' && !lead.bubble) { const b = Math.floor(t * 4) % 2, x = Math.round(lead.x), y = Math.round(lead.y); R(c, '#1a1420', x - 2, y - 33 - b, 4, 10); R(c, '#ff5a52', x - 1, y - 32 - b, 2, 5); R(c, '#ff5a52', x - 1, y - 26 - b, 2, 2) }
+    c.restore()
+    if (mix < 1) return
+    // Con la cancha completa, la pared también cambia: rótulo, marcador y botón de vuelta.
+    c.font = '7px "Pixelify Sans", monospace'; c.textBaseline = 'top'
+    const label = 'Cancha central', lw = Math.ceil(c.measureText(label).width)
+    R(c, '#2a3350', 6, 5, 80, 16); R(c, INK, 8, 7, lw + 8, 12); R(c, '#c1582f', 8, 18, lw + 8, 1); c.fillStyle = '#efe6d0'; c.fillText(label, 12, 9)
+    R(c, INK, 90, 5, 76, 24); R(c, '#0f1a30', 92, 7, 72, 20)
+    game.board().forEach((row, i) => {
+      const y = 9 + i * 9
+      if (row.serving) R(c, '#e9f24a', 94, y + 2, 2, 2)
+      c.fillStyle = i ? '#8fb8ff' : '#ff9d96'; c.fillText(row.name, 98, y)
+      c.fillStyle = '#efe6d0'; c.fillText(`${row.sets} ${row.games}`, 136, y)
+      c.fillStyle = '#f2b632'; c.fillText(row.points, 152, y)
+    })
+    const hot = world.hot === 'exit'
+    R(c, INK, EXIT.x, EXIT.y, EXIT.w, EXIT.h); R(c, hot ? '#f2b632' : '#efe6d0', EXIT.x + 1, EXIT.y + 1, EXIT.w - 2, EXIT.h - 3); R(c, hot ? '#c08a14' : '#b9ae93', EXIT.x + 1, EXIT.y + EXIT.h - 2, EXIT.w - 2, 1)
+    c.fillStyle = INK; c.fillText('A Mando', EXIT.x + 5, EXIT.y + 3)
+  }
+
+  /** El trofeo del Mando: una raqueta dorada sobre un pedestal. Al tocarlo empieza o termina el partido. */
+  function drawStatue(c: C, t: number) {
+    const { x, y } = STATUE, hot = world.hot === 'statue'
+    const gold = hot ? '#ffd65a' : '#f2b632', dark = '#b8860b'
+    R(c, 'rgba(0,0,0,.28)', x - 9, y - 1, 18, 3)
+    R(c, INK, x - 8, y - 9, 16, 10); R(c, '#aeb6bb', x - 7, y - 8, 14, 3); R(c, '#7d868b', x - 7, y - 5, 14, 5); R(c, gold, x - 3, y - 4, 6, 2)
+    // mango, cuello y aro con sus cuerdas
+    R(c, INK, x - 2, y - 17, 4, 9); R(c, dark, x - 1, y - 16, 2, 8); R(c, gold, x - 1, y - 16, 1, 8)
+    R(c, INK, x - 5, y - 31, 10, 15); R(c, gold, x - 4, y - 30, 8, 13); R(c, dark, x + 3, y - 29, 1, 11); R(c, '#fff3c4', x - 3, y - 29, 6, 11)
+    for (let i = 0; i < 3; i++) { R(c, gold, x - 2 + i * 2, y - 29, 1, 11); R(c, gold, x - 3, y - 27 + i * 3, 6, 1) }
+    R(c, INK, x - 5, y - 31, 1, 1); R(c, INK, x + 4, y - 31, 1, 1); R(c, INK, x - 5, y - 17, 1, 1); R(c, INK, x + 4, y - 17, 1, 1)
+    // un destello recorre el trofeo cada pocos segundos
+    const g = (t * 0.9) % 4
+    if (g < 0.5) { const sy = y - 30 + Math.round(g * 22); R(c, '#ffffff', x - 3, sy, 2, 1); R(c, '#ffffff', x - 2, sy - 1, 1, 3) }
+  }
+
   function draw(c: C, t: number, hoverId: string | null, selectedId: string | null) {
     c.save()
     if (shake > 0) c.translate(Math.round(Math.sin(t * 90) * 2), 0)
@@ -342,10 +442,13 @@ export function createWorld(scheme: SchemeT, calm = false) {
     for (const r of rooms.values()) drawDoor(c, r)
     const items: { y: number; f: () => void }[] = []
     for (const a of actors.values()) {
+      if (mix >= 1 && a.room.index === 0) continue
       items.push({ y: a.seat.y + 1, f: () => drawDesk(c, a, t) })
       items.push({ y: a.y, f: () => drawActor(c, a, t, a.id === selectedId) })
     }
     items.sort((p, q) => p.y - q.y).forEach((i) => i.f())
+    drawCourt(c, t)
+    drawStatue(c, t)
     // luz: las salas que aún no arrancan quedan a oscuras; los monitores encendidos iluminan
     for (const r of rooms.values()) if (r.lit < 0.99) R(c, `rgba(8,11,26,${(0.42 * (1 - r.lit)).toFixed(3)})`, r.ox, r.oy, RW, RH)
     c.globalCompositeOperation = 'lighter'
@@ -371,6 +474,8 @@ export function createWorld(scheme: SchemeT, calm = false) {
     c.font = '7px "Pixelify Sans", monospace'; c.textBaseline = 'top'
     for (const f of floats) { c.globalAlpha = Math.min(1, f.life); c.fillStyle = INK; c.fillText(f.text, Math.round(f.x) - 9, Math.round(f.y) + 1); c.fillStyle = '#f2b632'; c.fillText(f.text, Math.round(f.x) - 10, Math.round(f.y)); c.globalAlpha = 1 }
     for (const a of actors.values()) if (a.bubble) drawBubble(c, a)
+    const tip = world.hot === 'statue' ? (tennisOn ? 'Volver a la oficina' : 'Jugar un partido') : null
+    if (tip) { const w = Math.ceil(c.measureText(tip).width) + 8, x = Math.min(W - w - 2, STATUE.x - w + 12); R(c, INK, x, STATUE.y - 46, w, 11); c.fillStyle = '#f2b632'; c.fillText(tip, x + 4, STATUE.y - 44) }
     const h = hoverId ? actors.get(hoverId) : null
     if (h && !h.bubble) {
       const w = Math.ceil(c.measureText(h.name).width) + 8, x = Math.max(2, Math.min(W - w - 2, Math.round(h.x - w / 2))), y = Math.max(2, Math.round(h.y) - 36)
