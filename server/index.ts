@@ -8,7 +8,9 @@ import { createEngine, type Engine } from './engine/pipeline.ts'
 import { simRunner } from './engine/simRunner.ts'
 import { supabaseFiles } from './files.ts'
 import { commercial } from './schemes/commercial.ts'
+import { claudeReporter } from './report.ts'
 import { supabaseDb } from './store.ts'
+import { createUsers, type Role } from './users.ts'
 
 const REQUIRED = ['DATABASE_URL', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'ALLOWED_EMAILS']
 const missing = REQUIRED.filter((key) => !process.env[key])
@@ -24,7 +26,7 @@ const allowed = env.ALLOWED_EMAILS.split(',').map((e) => e.trim().toLowerCase())
 
 // Validar la sesión es una llamada de red a Supabase. Se recuerda 60 s por token para no repetirla en cada consulta.
 // ponytail: una sesión cerrada sigue valiendo hasta 60 s; bajar el plazo si hace falta revocación inmediata.
-const sessions = new Map<string, { email: string; until: number }>()
+const sessions = new Map<string, { email: string; role: Role; until: number }>()
 
 const sim = simRunner({ delayMs: Number(env.SIM_DELAY_MS ?? 1500), rejectOnce: ['production'] })
 const real = claudeRunner({ agentsDir: join(import.meta.dirname, 'agents') })
@@ -33,26 +35,51 @@ const engine: Engine = createEngine({
   db,
   files: supabaseFiles(supabase),
   schemes: { commercial },
-  // El interruptor de simulación del panel decide, en cada paso, entre agentes enlatados y agentes reales.
+  reporter: claudeReporter(),
+  // Cada proyecto usa el modo con el que se creó; el interruptor del panel solo decide el de los nuevos.
   runner: {
-    runAgent: async (run) => ((await engine.getSettings()).simulation ? sim : real).runAgent(run),
-    runAuditor: async (run) => ((await engine.getSettings()).simulation ? sim : real).runAuditor(run),
+    runAgent: (run) => (run.project.simulation ? sim : real).runAgent(run),
+    runAuditor: (run) => (run.project.simulation ? sim : real).runAuditor(run),
+  },
+})
+
+// Las cuentas viven en Supabase Auth. Se crean ya confirmadas: quien las crea entrega la contraseña en persona.
+const users = createUsers({
+  db,
+  owners: allowed,
+  identity: {
+    async create(email, password) {
+      const { error } = await supabase.auth.admin.createUser({ email, password, email_confirm: true })
+      if (error) throw new Error(/already/i.test(error.message) ? 'Ya existe una cuenta con ese correo en Supabase. Bórrala allí o usa otro correo.' : `No se pudo crear la cuenta: ${error.message}`)
+    },
+    async remove(email) {
+      // ponytail: recorre la lista de cuentas; con miles de usuarios convendría buscar por correo en la base.
+      for (let page = 1; page < 50; page++) {
+        const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 200 })
+        if (error) throw error
+        const found = data.users.find((u) => u.email?.toLowerCase() === email)
+        if (found) { const gone = await supabase.auth.admin.deleteUser(found.id); if (gone.error) throw gone.error; return }
+        if (data.users.length < 200) return
+      }
+    },
   },
 })
 
 const app = createApp({
   engine,
+  users,
   publicConfig: { supabaseUrl: env.SUPABASE_URL, supabaseAnonKey: env.SUPABASE_ANON_KEY },
   auth: async (token) => {
     const hit = sessions.get(token)
-    if (hit && hit.until > Date.now()) return hit.email
+    if (hit && hit.until > Date.now()) return { email: hit.email, role: hit.role }
     const user = (await supabase.auth.getUser(token)).data.user
     // Un correo sin confirmar no prueba nada: cualquiera podría registrarse con la dirección de otro.
     const email = user?.email_confirmed_at ? user.email?.toLowerCase() : undefined
-    if (!email || !allowed.includes(email)) return null
+    const role = email ? await users.roleOf(email) : null
+    if (!email || !role) return null
     if (sessions.size > 100) sessions.clear()
-    sessions.set(token, { email, until: Date.now() + 60_000 })
-    return email
+    sessions.set(token, { email, role, until: Date.now() + 60_000 })
+    return { email, role }
   },
 })
 

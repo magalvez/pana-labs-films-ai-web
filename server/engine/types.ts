@@ -24,6 +24,8 @@ export type Project = {
   budget_cap: number
   spent: number
   created_at: string
+  /** Modo con el que se creó. No cambia aunque después se mueva el interruptor del panel. */
+  simulation: boolean
 
   brand: string | null
 }

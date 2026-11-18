@@ -71,6 +71,20 @@ Los modelos y las tarifas están en `server/media/prices.ts`. El costo se estima
 - **Remotion.** Es gratis para empresas de hasta 3 personas. Con 4 o más hace falta su licencia de empresa.
 - **Primer render.** La primera vez que se renderiza un cierre, Remotion descarga un navegador de unos 140 MB.
 
+## Producciones, equipo y clientes
+
+Estas pantallas solo las ven los administradores, desde la barra superior.
+
+- **Producciones.** Todas las producciones con su estado y su costo. Al abrir una, la hoja de costos: total frente al tope, cuánto fue de Claude y cuánto de generación, primera pasada frente a repeticiones, por etapa y por agente, y la bitácora de cada ejecución. Desde ahí se pausa, reanuda, cancela o borra.
+- **Para el cliente.** Un enlace de solo lectura abre una página con la pieza, sus versiones y la memoria de producción, que Claude escribe a partir de los entregables. No pide cuenta ni enseña costos. El enlace vence, se puede revocar y cuenta las visitas.
+- **Equipo.** Crear cuentas y darles papel: Administración (todo) o Producción (crear, seguir y aprobar). Las cuentas se crean ya activas; si no escribes contraseña se genera una y se muestra una sola vez. Los correos de `ALLOWED_EMAILS` son la dirección: siempre administran y no se quitan desde la pantalla.
+
+El enlace para clientes apunta a este servidor. Mientras corra en tu máquina, solo se abre desde ella; para enviarlo a un cliente hay que desplegar la app.
+
+## Costos
+
+Lo que más cuesta no es generar video, sino los agentes de Claude, sobre todo cuando repiten trabajo y cuando miran muchas imágenes. La caché de prompts está activada: en cada paso de un agente, lo que ya se envió antes se cobra como lectura de caché. El costo real de cada producción se ve en su hoja de costos.
+
 ## Dónde desplegarlo
 
 El servidor es un proceso que debe seguir vivo mientras un comercial se produce. Necesita un servicio con proceso permanente. Las plataformas de funciones sin servidor, como Vercel, no sirven tal cual.
@@ -83,6 +97,9 @@ El servidor es un proceso que debe seguir vivo mientras un comercial se produce.
 | `server/agents/*.md` | Instrucciones de cada agente y rúbrica de cada auditor |
 | `server/engine/pipeline.ts` | Motor: puntos de control, contrato de entrega, auditoría, reintentos, aprobaciones, presupuesto |
 | `server/app.ts` | La API |
+| `server/users.ts` | Quién tiene acceso y con qué papel |
+| `server/report.ts` | La memoria de producción para el cliente |
+| `web/src/Admin.tsx`, `Team.tsx`, `Preview.tsx` | Producciones, Equipo y la vista del cliente |
 | `server/index.ts` | Arranque: conecta Supabase, el motor y la API |
 | `server/store.ts` y `server/files.ts` | Postgres y Storage de Supabase |
 | `supabase/migrations/` | Migraciones SQL numeradas: tablas y bucket de Storage |

@@ -79,10 +79,14 @@ export async function cut(clips: Clip[], out: string, fadeOut?: { seconds: numbe
     at += clips[i].duration
   }
   if (fadeOut) {
-    graph.push(`[${last}]fade=t=out:st=${Math.max(at - fadeOut.seconds, 0)}:d=${fadeOut.seconds}:color=${hexColor(fadeOut.color)}[faded]`)
+    const d = Math.min(fadeOut.seconds, at)
+    graph.push(`[${last}]fade=t=out:st=${at - d}:d=${d}:color=${hexColor(fadeOut.color)}[faded]`)
     last = 'faded'
   }
   await ffmpeg(...inputs, '-filter_complex', graph.join(';'), '-map', `[${last}]`, '-t', String(at), '-an', ...H264, out)
+  // Un encadenado al que le falta material no da error: entrega un corte más corto. Se comprueba el resultado.
+  const got = (await probe(out)).durationSeconds ?? 0
+  if (Math.abs(got - at) > 0.1) throw new Error(`el corte salió de ${got} s y debía durar ${at} s: a alguna toma le falta material después de su tramo para el encadenado`)
 }
 
 export type Grade = { contrast: number; saturation: number; brightness: number; gamma: number }
@@ -112,9 +116,17 @@ export async function master(o: { video: string; endCard?: string; /** Segundos 
   let last = 'main'
   if (o.endCard) {
     inputs.push('-i', o.endCard)
-    const d = o.endCardFade ?? 0
+    let d = o.endCardFade ?? 0
+    let mainSeconds = 0
+    if (d > 0) {
+      mainSeconds = (await probe(o.video)).durationSeconds ?? 0
+      const endSeconds = (await probe(o.endCard)).durationSeconds ?? 0
+      if (!mainSeconds || !endSeconds) throw new Error('no se pudo medir la duración del corte o del cierre para encadenarlos')
+      // El cierre tiene que llegar a verse entero: el encadenado ocupa como mucho su primera mitad.
+      d = Math.min(d, endSeconds / 2)
+    }
     // El encadenado se alimenta del último cuadro del corte, repetido: así la pieza sigue durando corte más cierre.
-    if (d > 0) graph.push(`[${n}:v]${fit(size)}[end]`, `[main]tpad=stop_mode=clone:stop_duration=${d}[held]`, `[held][end]xfade=transition=fade:duration=${d}:offset=${(await probe(o.video)).durationSeconds ?? 0}[joined]`)
+    if (d > 0) graph.push(`[${n}:v]${fit(size)}[end]`, `[main]tpad=stop_mode=clone:stop_duration=${d}[held]`, `[held][end]xfade=transition=fade:duration=${d}:offset=${mainSeconds}[joined]`)
     else graph.push(`[${n}:v]${fit(size)}[end]`, `[main][end]concat=n=2:v=1:a=0[joined]`)
     last = 'joined'
     n++

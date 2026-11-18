@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { plainReporter, type Reporter } from '../report.ts'
 import { brandDir, type AgentDef, type Asset, type Brand, type Db, type Ev, type Files, type Input, type NewAsset, type Project, type Runner, type Scheme, type StageDef } from './types.ts'
 
 export type Settings = { humanReview: boolean; simulation: boolean }
@@ -36,6 +37,8 @@ export function createEngine(opts: {
   runner: Runner
   maxAuditRetries?: number
   maxContractRetries?: number
+  /** Quién escribe la memoria de producción para el cliente. Sin él, o en simulación, se usa una plantilla. */
+  reporter?: Reporter
 }) {
   const { db, files, schemes, runner } = opts
   const maxAuditRetries = opts.maxAuditRetries ?? 2
@@ -108,6 +111,18 @@ export function createEngine(opts: {
     await emit(id, 'project.status', { status, reason })
   }
 
+  /**
+   * Cambia de estado solo si el proyecto sigue donde se le vio. Entre leer el estado y escribirlo pasan idas a la
+   * base: sin esta condición, una cancelación que llegara en medio quedaría pisada y el proyecto volvería a gastar.
+   */
+  async function move(id: string, from: Project['status'] | Project['status'][], status: Project['status'], reason: string | null = null) {
+    const list = [from].flat()
+    const changed = await db(`UPDATE projects SET status = ?, reason = ? WHERE id = ? AND status IN (${list.map(() => '?').join(',')}) RETURNING id`, status, reason, id, ...list)
+    if (changed.length) await emit(id, 'project.status', { status, reason })
+    return changed.length > 0
+  }
+  const pauseIfRunning = async (id: string, reason: string): Promise<void> => void (await move(id, 'running', 'paused', reason))
+
   async function stageRow(id: string, stage: StageDef): Promise<StageRow> {
     const row = await one('SELECT * FROM stages WHERE project_id = ? AND stage = ?', id, stage.id)
     if (row) return row
@@ -153,15 +168,18 @@ export function createEngine(opts: {
   /**
    * Deja lista la carpeta de una versión nueva. Si hay una versión anterior, parte de una copia de sus archivos:
    * así el agente rehace solo lo que le devolvieron (un plano, una línea de voz) y no paga otra vez por todo.
+   * Devuelve si la carpeta ya traía archivos de un intento interrumpido de esta misma versión.
    */
   async function prepareDir(id: string, stage: string, agent: string, version: number, dir: string) {
     // Si la carpeta ya tiene archivos es que un intento anterior se interrumpió (caída, error, tiempo agotado).
-    // Lo que alcanzó a generar ya se pagó: se conserva y el agente lo retoma.
-    if (version === 1 || (await files.list(dir)).length) return
+    // Lo que alcanzó a generar ya se pagó: se conserva, y de la versión anterior se trae solo lo que falte.
+    const have = new Set(await files.list(dir))
+    if (version === 1) return have.size > 0
     const prev = stepDir(id, stage, agent, version - 1)
-    const names = (await files.list(prev)).filter((f) => f !== 'handoff.json')
+    const names = (await files.list(prev)).filter((f) => f !== 'handoff.json' && !have.has(f))
     await Promise.all(names.map((f) => files.copy(`${prev}/${f}`, `${dir}/${f}`)))
     await copyAssets(id, prev, dir, names)
+    return have.size > 0
   }
 
   /** Los archivos copiados conservan su procedencia, con la ruta nueva. */
@@ -193,12 +211,17 @@ export function createEngine(opts: {
     const brand = await brandOf(p)
     let model = ''
     let nudged = false
+    let failures = 0
     let feedback = prev?.feedback ?? null
+    // Tras un intento interrumpido el agente puede encontrar su trabajo ya hecho: no tocar nada es entonces lo correcto.
+    const resumed = await prepareDir(p.id, stage.id, agent.id, version, dir)
     for (let attempt = 0; ; attempt++) {
-      await Promise.all([attempt === 0 ? prepareDir(p.id, stage.id, agent.id, version, dir) : null, emit(p.id, 'agent.started', { stage: stage.id, agent: agent.id, version, feedback })])
+      // El gasto se relee en cada intento: el anterior pudo consumir casi todo el tope.
+      const fresh = attempt === 0 ? p : await project(p.id)
+      if (fresh.spent >= fresh.budget_cap) return false
+      await emit(p.id, 'agent.started', { stage: stage.id, agent: agent.id, version, feedback })
       const result = await runner.runAgent({
-        // El gasto se relee en cada intento: el anterior pudo consumir casi todo el tope.
-        project: attempt === 0 ? p : await project(p.id), stage, agent, version, dir, to, files, brand,
+        project: fresh, stage, agent, version, dir, to, files, brand,
         inputs: inputsFor(p.id, latest, scheme, stage, agent),
         feedback,
         say: (text) => chatter(p.id, stage.id, agent.id, text),
@@ -212,13 +235,15 @@ export function createEngine(opts: {
       let problem = await checkContract(files, dir, agent)
       // Como una versión nueva parte de la copia de la anterior, un agente puede darla por corregida sin tocar nada
       // y el contrato no lo nota. Se le avisa una vez; si insiste en que no hay nada que cambiar, se acepta y lo juzga el auditor.
-      if (!problem && !nudged && prev?.feedback && !prev.feedback.startsWith(CASCADE) && (await unchanged(dir))) {
+      const real = Boolean(problem)
+      if (!problem && !nudged && !resumed && prev?.feedback && !prev.feedback.startsWith(CASCADE) && (await unchanged(dir))) {
         nudged = true
         problem = 'te devolvieron el trabajo y terminaste sin escribir ni generar ningún archivo: tus entregables siguen siendo los de la versión anterior. Reescribe los que deban cambiar, o explica en tu resumen por qué ninguno cambia'
       }
       if (!problem) break
       await emit(p.id, 'contract.failed', { stage: stage.id, agent: agent.id, version, problem })
-      if (attempt >= maxContractRetries) throw new Error(`${agent.name} no cumplió el contrato de entrega: ${problem}`)
+      // El aviso por no haber cambiado nada no es un incumplimiento: no gasta reintentos de contrato.
+      if (real && failures++ >= maxContractRetries) throw new Error(`${agent.name} no cumplió el contrato de entrega: ${problem}`)
       // El reintento conserva la carpeta y le dice al agente qué faltó, para que no rehaga (ni pague) todo.
       feedback = `${prev?.feedback ? `${prev.feedback}\n` : ''}Tu entrega quedó incompleta: ${problem}. Completa solo lo que falta.`
     }
@@ -226,6 +251,7 @@ export function createEngine(opts: {
     // La lista real de archivos: los entregables fijos más lo que el agente generó con herramientas.
     const produced: string[] = JSON.parse((await files.read(`${dir}/handoff.json`))!).files
     await emit(p.id, 'agent.done', { stage: stage.id, agent: agent.id, version, to, files: [...new Set([...agent.deliverables, ...produced])] })
+    return true
   }
 
   async function sendBack(id: string, stage: StageDef, agents: string[], feedback: string) {
@@ -276,19 +302,20 @@ export function createEngine(opts: {
           // ponytail: agentes en secuencia; paralelizar exige declarar dependencias entre agentes en el esquema.
           const latest = await latestSteps(id)
           const pending = stage.agents.find((a) => latest.get(`${stage.id}/${a.id}`)?.status !== 'done')
-          if (pending && p.spent >= p.budget_cap) return setStatus(id, 'paused', 'budget')
-          if (pending) await runStep(p, scheme, stage, pending, latest)
+          // El tope se comprueba antes de cada agente, de cada reintento y de cada auditoría.
+          if (p.spent >= p.budget_cap) return pauseIfRunning(id, 'budget')
+          if (pending) { if (!(await runStep(p, scheme, stage, pending, latest))) return pauseIfRunning(id, 'budget') }
           else await audit(p, scheme, stage, row, latest)
         } else if (row.status === 'audited' && !(await getSettings()).humanReview) {
           await setStage(id, stage.id, 'approved')
           await emit(id, 'stage.approved', { stage: stage.id, by: 'auditor' })
         } else {
-          return setStatus(id, 'waiting_human', row.status === 'escalated' ? 'escalated' : 'gate')
+          return void (await move(id, 'running', 'waiting_human', row.status === 'escalated' ? 'escalated' : 'gate'))
         }
       }
     }
     // Pudo cancelarse o pausarse mientras se cerraba la última etapa.
-    if ((await project(id)).status === 'running') await setStatus(id, 'done')
+    await move(id, 'running', 'done')
   }
 
   /** Un solo recorrido por proyecto a la vez dentro de este proceso. */
@@ -296,22 +323,21 @@ export function createEngine(opts: {
     let job = active.get(id)
     if (!job) {
       aborts.set(id, new AbortController())
-      let crashed = false
+      let unrecorded = false
       job = loop(id)
         .catch(async (err) => {
-          crashed = true
           // Solo un proyecto en marcha pasa a detenido: si la persona lo canceló o pausó, esa decisión se respeta.
           const reason = err instanceof Error ? err.message : String(err)
           const changed = await db("UPDATE projects SET status = 'failed', reason = ? WHERE id = ? AND status = 'running' RETURNING id", reason, id)
           if (changed.length) await emit(id, 'project.status', { status: 'failed', reason })
         })
-        .catch((err) => console.error(`No se pudo registrar el fallo del proyecto ${id}:`, err))
+        .catch((err) => { unrecorded = true; console.error(`No se pudo registrar el fallo del proyecto ${id}:`, err) })
         .finally(async () => {
           active.delete(id)
           aborts.delete(id)
           // Una reanudación que llegó justo cuando este recorrido terminaba no encontró sitio: se atiende ahora.
-          // Tras un fallo no se reintenta solo: si ni siquiera se pudo anotar, insistir sería un bucle sin fin.
-          if (!crashed && (await one('SELECT status FROM projects WHERE id = ?', id).catch(() => null))?.status === 'running') kick(id)
+          // Si el fallo ni siquiera se pudo anotar, el estado sigue "en marcha" por error: insistir sería un bucle sin fin.
+          if (!unrecorded && (await one('SELECT status FROM projects WHERE id = ?', id).catch(() => null))?.status === 'running') kick(id)
         })
       active.set(id, job)
     }
@@ -338,7 +364,9 @@ export function createEngine(opts: {
     // La biblioteca de marca se guarda por cliente y se reutiliza en sus siguientes proyectos.
     if (input.brand) await db('INSERT INTO brands (name, kit) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET kit = excluded.kit', input.brand.name, input.brand.kit)
     const id = `p_${randomUUID().slice(0, 8)}`
-    await db('INSERT INTO projects (id, name, brief, scheme, brand, status, budget_cap, created_at) VALUES (?,?,?,?,?,?,?,?)', id, input.name, input.brief, scheme, input.brand?.name ?? null, 'running', input.budgetCap, now())
+    // El modo se fija al crear: cambiar el interruptor después no convierte un proyecto simulado en uno que gasta.
+    const { simulation } = await getSettings()
+    await db('INSERT INTO projects (id, name, brief, scheme, brand, status, budget_cap, created_at, simulation) VALUES (?,?,?,?,?,?,?,?,?)', id, input.name, input.brief, scheme, input.brand?.name ?? null, 'running', input.budgetCap, now(), simulation)
     await emit(id, 'project.status', { status: 'running', reason: null })
     kick(id)
     return project(id)
@@ -349,14 +377,20 @@ export function createEngine(opts: {
     const [p, stage] = await Promise.all([project(id), currentStage(id)])
     if (p.status !== 'waiting_human' || !stage) throw new Error('El proyecto no está esperando una decisión')
     if (!d.approve && !d.comment?.trim()) throw new Error('Un rechazo necesita un comentario')
+    const scheme = schemes[p.scheme]
+    const reachable = scheme.stages.slice(0, scheme.stages.indexOf(stage) + 1).flatMap((s) => s.agents.map((a) => a.id))
+    const agents = Array.isArray(d.agents) ? d.agents : []
+    const unknown = agents.filter((a) => !reachable.includes(a))
+    if (!d.approve && unknown.length) throw new Error(`No se puede devolver trabajo a ${unknown.join(', ')}: no es de esta etapa ni de una anterior`)
+    // Toma la decisión una sola vez: un doble clic o una cancelación simultánea no la repiten ni la pisan.
+    if (!(await move(id, 'waiting_human', 'running'))) throw new Error('El proyecto no está esperando una decisión')
     await emit(id, 'gate.decided', { stage: stage.id, approve: d.approve, comment: d.comment ?? null })
     if (d.approve) {
       await setStage(id, stage.id, 'approved')
       await emit(id, 'stage.approved', { stage: stage.id, by: 'human' })
     } else {
-      await returnWork(id, schemes[p.scheme], stage, Array.isArray(d.agents) ? d.agents : [], d.comment!)
+      await returnWork(id, scheme, stage, agents, d.comment!)
     }
-    await setStatus(id, 'running')
     kick(id)
   }
 
@@ -390,8 +424,7 @@ export function createEngine(opts: {
   }
 
   async function pause(id: string) {
-    if ((await project(id)).status !== 'running') throw new Error('Solo se puede pausar un proyecto en marcha')
-    await setStatus(id, 'paused', 'manual')
+    if (!(await move(id, 'running', 'paused', 'manual'))) throw new Error('Solo se puede pausar un proyecto en marcha')
   }
 
   async function resume(id: string, budgetCap?: number) {
@@ -399,7 +432,7 @@ export function createEngine(opts: {
     if (p.status !== 'paused' && p.status !== 'failed') throw new Error('El proyecto no está pausado')
     if (budgetCap !== undefined && budgetCap <= p.spent) throw new Error(`El tope nuevo debe ser mayor que lo ya gastado ($${p.spent.toFixed(2)})`)
     if (budgetCap !== undefined) await db('UPDATE projects SET budget_cap = ? WHERE id = ?', budgetCap, id)
-    await setStatus(id, 'running')
+    if (!(await move(id, ['paused', 'failed'], 'running'))) throw new Error('El proyecto no está pausado')
     kick(id)
   }
 
@@ -465,7 +498,160 @@ export function createEngine(opts: {
 
   const listProjects = (): Promise<Project[]> => db('SELECT * FROM projects ORDER BY created_at DESC')
 
-  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listAssets, decide, pause, resume, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
+
+  // ---------------------------------------------------------------- Administración: costos, limpieza y vistas previas
+
+  /** Todas las producciones con lo necesario para compararlas de un vistazo. */
+  async function overview() {
+    const rows = await db(`SELECT p.*,
+      (SELECT count(*)::int FROM stages s WHERE s.project_id = p.id AND s.status = 'approved') AS approved,
+      (SELECT count(*)::int FROM steps t WHERE t.project_id = p.id) AS runs,
+      (SELECT count(*)::int FROM steps t WHERE t.project_id = p.id AND t.version > 1) AS reworks,
+      (SELECT coalesce(sum(a.cost_usd), 0) FROM assets a WHERE a.project_id = p.id) AS generation,
+      (SELECT a.path FROM assets a WHERE a.project_id = p.id AND a.path LIKE '%/master.mp4' ORDER BY a.id DESC LIMIT 1) AS master,
+      (SELECT count(*)::int FROM shares h WHERE h.project_id = p.id AND h.revoked_at IS NULL AND h.expires_at > ?) AS shares,
+      (SELECT max(e.ts) FROM events e WHERE e.project_id = p.id) AS last_activity
+      FROM projects p ORDER BY p.created_at DESC`, now())
+    return rows.map((r) => ({ ...r, spent: Number(r.spent), budget_cap: Number(r.budget_cap), generation: Number(r.generation), stages: schemes[r.scheme]?.stages.length ?? 0 }))
+  }
+
+  /**
+   * En qué se fue el dinero de una producción. Cada ejecución de un agente o de un auditor es una fila;
+   * "repetición" es toda ejecución que no fue la primera de ese agente o la primera auditoría de su etapa.
+   */
+  async function costReport(id: string) {
+    const p = await project(id)
+    const scheme = schemes[p.scheme]
+    const names = new Map(scheme.stages.flatMap((s) => [...s.agents, s.auditor].map((a) => [a.id, a.name] as const)))
+    type Run = { stage: string; who: string; name: string; kind: 'agente' | 'auditor' | 'memoria'; n: number; usd: number; repeat: boolean; startedAt: string; endedAt: string }
+    const runs: Run[] = []
+    const open = new Map<string, Run>()
+    const evs = await db("SELECT type, data, ts FROM events WHERE project_id = ? AND type IN ('agent.started','audit.started','cost') ORDER BY id", id)
+    for (const e of evs) {
+      const d = JSON.parse(e.data)
+      if (e.type === 'cost') {
+        let run = open.get(d.agent)
+        // Un costo sin ejecución abierta es la memoria para el cliente u otro gasto fuera del recorrido.
+        if (!run) { run = { stage: d.stage, who: d.agent, name: names.get(d.agent) ?? 'Memoria para el cliente', kind: 'memoria', n: 1, usd: 0, repeat: false, startedAt: e.ts, endedAt: e.ts }; runs.push(run) }
+        run.usd += d.usd
+        run.endedAt = e.ts
+        continue
+      }
+      const who = e.type === 'agent.started' ? d.agent : d.auditor
+      const kind = e.type === 'agent.started' ? 'agente' : 'auditor'
+      const before = runs.filter((r) => r.who === who && r.stage === d.stage).length
+      const run: Run = { stage: d.stage, who, name: names.get(who) ?? who, kind, n: kind === 'agente' ? d.version : before + 1, usd: 0, repeat: before > 0, startedAt: e.ts, endedAt: e.ts }
+      runs.push(run)
+      open.set(who, run)
+    }
+    const sum = (list: Run[]) => list.reduce((a, r) => a + r.usd, 0)
+    const generation = (await db('SELECT provider, tool, count(*)::int AS files, coalesce(sum(cost_usd), 0) AS usd FROM assets WHERE project_id = ? AND cost_usd > 0 GROUP BY provider, tool ORDER BY usd DESC', id)).map((r) => ({ provider: r.provider, tool: r.tool, files: r.files, usd: Number(r.usd) }))
+    const generationUsd = generation.reduce((a, g) => a + g.usd, 0)
+    const byAgent = [...Map.groupBy(runs, (r) => r.who)].map(([who, list]) => ({ id: who, name: list[0].name, stage: list[0].stage, kind: list[0].kind, usd: sum(list), runs: list.length, repeats: list.filter((r) => r.repeat).length })).sort((a, b) => b.usd - a.usd)
+    const byStage = scheme.stages.map((s) => {
+      const list = runs.filter((r) => r.stage === s.id)
+      return { id: s.id, name: s.name, usd: sum(list), firstPassUsd: sum(list.filter((r) => !r.repeat)), reworkUsd: sum(list.filter((r) => r.repeat)), runs: list.length, repeats: list.filter((r) => r.repeat).length }
+    })
+    const audits = await db("SELECT data FROM events WHERE project_id = ? AND type = 'audit.verdict' ORDER BY id", id)
+    const times = await db('SELECT min(ts) AS first, max(ts) AS last FROM events WHERE project_id = ?', id)
+    return {
+      project: p,
+      totalUsd: p.spent,
+      generationUsd,
+      // Lo demás es Claude: los agentes, los auditores y la revisión de video.
+      modelUsd: Math.max(p.spent - generationUsd, 0),
+      firstPassUsd: sum(runs.filter((r) => !r.repeat)),
+      reworkUsd: sum(runs.filter((r) => r.repeat)),
+      rejections: audits.filter((a) => !JSON.parse(a.data).approved).length,
+      startedAt: times[0]?.first ?? null,
+      lastActivityAt: times[0]?.last ?? null,
+      byStage, byAgent, generation, runs,
+    }
+  }
+
+  /** Borra una producción con todos sus archivos. No se puede deshacer. */
+  async function deleteProject(id: string) {
+    await active.get(id)
+    const p = await project(id)
+    if (p.status === 'running') throw new Error('Pausa o cancela la producción antes de borrarla')
+    const dirs = new Set((await db('SELECT stage, agent, version FROM steps WHERE project_id = ?', id)).map((r) => stepDir(id, r.stage, r.agent, r.version)))
+    // Carpetas de intentos que no llegaron a registrarse como paso, y la de la memoria para el cliente.
+    for (const a of await db('SELECT DISTINCT path FROM assets WHERE project_id = ?', id)) dirs.add(`${id}/${a.path.split('/').slice(0, -1).join('/')}`)
+    dirs.add(`${id}/client`)
+    for (const dir of dirs) await files.removeDir(dir)
+    for (const table of ['shares', 'assets', 'events', 'steps', 'stages']) await db(`DELETE FROM ${table} WHERE project_id = ?`, id)
+    await db('DELETE FROM projects WHERE id = ?', id)
+    queues.delete(id)
+  }
+
+  /** Los videos que se le enseñan al cliente: la pieza principal y las versiones de entrega vigentes. */
+  async function clientVideos(id: string) {
+    const assets = (await listAssets(id)).filter((a) => a.kind === 'video')
+    const latest = await latestSteps(id)
+    const dirOf = (stage: string, agent: string) => { const s = latest.get(`${stage}/${agent}`); return s ? `${stage}/${agent}/v${s.version}/` : null }
+    const master = dirOf('postproduction', 'motion-graphics')
+    const versions = dirOf('delivery', 'versioning')
+    const label = (a: Asset) => { const m = a.measurements; return !m?.width || !m.height ? 'Versión' : m.width > m.height ? 'Horizontal 16:9' : m.width < m.height ? 'Vertical 9:16' : 'Cuadrado 1:1' }
+    const out: { path: string; label: string; seconds: number | null; width: number | null; height: number | null }[] = []
+    const add = (a: Asset, text: string) => out.push({ path: a.path, label: text, seconds: a.measurements?.durationSeconds ?? null, width: a.measurements?.width ?? null, height: a.measurements?.height ?? null })
+    const main = master ? assets.find((a) => a.path === `${master}master.mp4`) : undefined
+    if (main) add(main, 'Pieza principal')
+    if (versions) for (const a of assets.filter((x) => x.path.startsWith(versions))) add(a, label(a))
+    return out
+  }
+
+  const REPORT = 'client/report.md'
+  /** La memoria de producción para el cliente. Se escribe una vez y se guarda; `fresh` la vuelve a escribir. */
+  async function clientReport(id: string, fresh = false): Promise<string> {
+    const path = `${id}/${REPORT}`
+    if (!fresh) { const saved = await files.read(path); if (saved) return saved }
+    const p = await project(id)
+    const latest = await latestSteps(id)
+    const wanted = [['strategy', 'brief-strategy', 'brief-analysis.md'], ['strategy', 'story-architect', 'script.md'], ['strategy', 'concept-pitch', 'treatment.md'], ['preproduction', 'art-director', 'art-direction.md'], ['preproduction', 'storyboard-previs', 'shots.json'], ['production', 'voice-performance', 'voice.json'], ['postproduction', 'sound-music', 'audio-mix.json'], ['delivery', 'versioning', 'versions.json'], ['delivery', 'disclosure-metadata', 'provenance.json']]
+    const docs: { name: string; text: string }[] = []
+    for (const [stage, agent, file] of wanted) {
+      const step = latest.get(`${stage}/${agent}`)
+      const text = step?.status === 'done' ? await files.read(`${stepDir(id, stage, agent, step.version)}/${file}`) : null
+      if (text) docs.push({ name: file, text: text.slice(0, 12_000) })
+    }
+    const write = p.simulation || !opts.reporter ? plainReporter : opts.reporter
+    const { markdown, costUsd } = await write({ project: p, brand: await brandOf(p), docs, videos: await clientVideos(id) })
+    await files.write(path, markdown)
+    await addCost(id, 'delivery', 'client-report', costUsd)
+    return markdown
+  }
+
+  /** Enlace de solo lectura para un cliente. El secreto va en el enlace; no hay otra forma de llegar a la vista previa. */
+  async function createShare(id: string, by: string, days = 14) {
+    const p = await project(id)
+    if (!(days >= 1 && days <= 90)) throw new Error('El enlace puede durar entre 1 y 90 días')
+    if (!(await clientVideos(id)).length) throw new Error('Esta producción todavía no tiene una pieza montada que enseñar')
+    await clientReport(id)
+    const token = randomBytes(24).toString('base64url')
+    const expires = new Date(Date.now() + days * 86_400_000).toISOString()
+    await db('INSERT INTO shares (token, project_id, created_by, created_at, expires_at) VALUES (?,?,?,?,?)', token, p.id, by, now(), expires)
+    return { token, expiresAt: expires }
+  }
+
+  const listShares = async (id: string) => (await db('SELECT token, created_by, created_at, expires_at, revoked_at, views FROM shares WHERE project_id = ? ORDER BY created_at DESC', id))
+    .map((r) => ({ token: r.token, createdBy: r.created_by, createdAt: r.created_at, expiresAt: r.expires_at, revokedAt: r.revoked_at, views: r.views, active: !r.revoked_at && r.expires_at > now() }))
+
+  async function revokeShare(id: string, token: string) {
+    const gone = await db('UPDATE shares SET revoked_at = ? WHERE token = ? AND project_id = ? AND revoked_at IS NULL RETURNING token', now(), token, id)
+    if (!gone.length) throw new Error('Ese enlace no existe o ya estaba revocado')
+  }
+
+  /** Lo que ve el cliente. Un enlace vencido, revocado o inventado no revela ni que el proyecto existe. */
+  async function openShare(token: string, count = false) {
+    if (!/^[\w-]{20,64}$/.test(token)) return null
+    const [share] = await db('SELECT project_id, expires_at FROM shares WHERE token = ? AND revoked_at IS NULL AND expires_at > ?', token, now())
+    if (!share) return null
+    if (count) await db('UPDATE shares SET views = views + 1 WHERE token = ?', token)
+    const p = await project(share.project_id)
+    return { projectId: p.id, name: p.name, brand: p.brand, expiresAt: share.expires_at as string, report: await clientReport(p.id), videos: await clientVideos(p.id) }
+  }
+
+  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
 }
 
 export type Engine = ReturnType<typeof createEngine>

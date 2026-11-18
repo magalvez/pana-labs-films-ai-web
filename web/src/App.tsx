@@ -1,6 +1,9 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, blobUrl, openFile, setOnExpired, setToken, upload } from './api'
+import { Admin } from './Admin'
+import { api, openFile, setOnExpired, setToken, upload } from './api'
+import { Media, mediaKind } from './media'
+import { Team } from './Team'
 import { Office } from './office/Office'
 import type { Ev, SchemeT, StageT } from './office/world'
 
@@ -12,30 +15,14 @@ type Detail = Project & { currentStage: string | null; stages: { stage: string; 
 type Settings = { humanReview: boolean; simulation: boolean }
 type Asset = { path: string; tool: string; model: string; costUsd: number; license: string; measurements: { durationSeconds: number | null; width: number | null; height: number | null; lufs: number | null } | null }
 
-const mediaKind = (name: string) => (/\.(jpe?g|png|webp)$/i.test(name) ? 'image' : /\.mp4$/i.test(name) ? 'video' : /\.mp3$/i.test(name) ? 'audio' : null)
 /** La pieza final más reciente, si Motion Graphics ya la entregó. */
 function masterPath(events: Ev[]): string | null {
   const done = [...events].reverse().find((e) => e.type === 'agent.done' && e.data.agent === 'motion-graphics' && e.data.files?.includes('master.mp4'))
   return done ? `${done.data.stage}/motion-graphics/v${done.data.version}/master.mp4` : null
 }
 
-/** Imagen, video o audio de un entregable. Se descarga con la sesión cuando hace falta mostrarlo. */
-function Media({ path, name }: { path: string; name: string }) {
-  const [url, setUrl] = useState('')
-  const [failed, setFailed] = useState(false)
-  useEffect(() => {
-    let current = '', gone = false
-    setUrl(''); setFailed(false)
-    blobUrl(path).then((u) => { current = u; if (gone) URL.revokeObjectURL(u); else setUrl(u) }).catch(() => setFailed(true))
-    return () => { gone = true; if (current) URL.revokeObjectURL(current) }
-  }, [path])
-  if (failed) return <p className="bad">No se pudo cargar {name}.</p>
-  if (!url) return <p className="hint">Cargando {name}…</p>
-  const kind = mediaKind(name)
-  if (kind === 'image') return <img className="media" src={url} alt={name} />
-  if (kind === 'video') return <video className="media" src={url} controls playsInline aria-label={name} />
-  return <audio className="media" src={url} controls aria-label={name} />
-}
+type View = 'studio' | 'producciones' | 'equipo'
+const viewOf = (hash: string): View => (hash === '#/producciones' ? 'producciones' : hash === '#/equipo' ? 'equipo' : 'studio')
 
 const STATUS: Record<string, string> = { running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera tu decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
 const usd = (n: number) => `$${n.toFixed(2)}`
@@ -59,6 +46,15 @@ export function App() {
   const [brandName, setBrandName] = useState('')
   const [brandKit, setBrandKit] = useState('')
   const [config, setConfig] = useState<Config | null>(null)
+  const [me, setMe] = useState<{ email: string; role: 'admin' | 'member' } | null>(null)
+  // La pantalla actual va en la dirección, para que recargar o compartirla lleve al mismo sitio.
+  const [view, setView] = useState<View>(viewOf(location.hash))
+  useEffect(() => {
+    const onHash = () => setView(viewOf(location.hash))
+    addEventListener('hashchange', onHash)
+    return () => removeEventListener('hashchange', onHash)
+  }, [])
+  const go = (v: View) => { location.hash = v === 'studio' ? '' : `#/${v}` }
   const [signedIn, setSignedIn] = useState(false)
   const supabase = useRef<SupabaseClient | null>(null)
   const pollNow = useRef(() => {})
@@ -95,8 +91,8 @@ export function App() {
   useEffect(() => {
     if (!ready) return
     void act(async () => {
-      const [s, st, ps, bs] = await Promise.all([api<SchemeT[]>('/schemes'), api<Settings>('/settings'), api<Project[]>('/projects'), api<Brand[]>('/brands')])
-      setSchemes(s); setSettings(st); setProjects(ps); setBrands(bs); setPid(ps[0]?.id ?? null)
+      const [s, st, ps, bs, who] = await Promise.all([api<SchemeT[]>('/schemes'), api<Settings>('/settings'), api<Project[]>('/projects'), api<Brand[]>('/brands'), api<{ email: string; role: 'admin' | 'member' }>('/me')])
+      setSchemes(s); setSettings(st); setProjects(ps); setBrands(bs); setMe(who); setPid(ps[0]?.id ?? null)
     })
   }, [act, ready])
 
@@ -138,12 +134,22 @@ export function App() {
   if (!scheme || !settings) return <p className="boot">{error || 'Abriendo el estudio…'}</p>
 
   const stage = scheme.stages.find((s) => s.id === detail?.currentStage)
+  // Las pantallas de administración solo existen para administradores; a los demás la dirección los devuelve al estudio.
+  const screen: View = me?.role === 'admin' ? view : 'studio'
   return (
     <div className="app">
       <header className="slate">
         <div className={loading ? 'stripes busy' : 'stripes'} aria-hidden="true" />
         <div className="slate-row">
           <h1>Pana Films Lab</h1>
+          {me?.role === 'admin' && (
+            <nav className="views" aria-label="Secciones">
+              <button aria-current={screen === 'studio' ? 'page' : undefined} onClick={() => go('studio')}>Estudio</button>
+              <button aria-current={screen === 'producciones' ? 'page' : undefined} onClick={() => go('producciones')}>Producciones</button>
+              <button aria-current={screen === 'equipo' ? 'page' : undefined} onClick={() => go('equipo')}>Equipo</button>
+            </nav>
+          )}
+          {screen === 'studio' && <>
           <label className="field">
             <span>Producción</span>
             <select value={pid ?? ''} onChange={(e) => setPid(e.target.value)} disabled={!projects.length}>
@@ -168,10 +174,11 @@ export function App() {
               </div>
             </>
           )}
+          </>}
           <div className="actions">
             <span className="loading" role="status">{loading > 0 && 'Cargando…'}</span>
-            {detail?.status === 'running' && <button onClick={() => post('pause')}>Pausar</button>}
-            {detail && events.length > 0 && <button disabled={replaying} onClick={() => { setReplaying(true); setReplay((n) => n + 1) }}>{replaying ? 'Reproduciendo…' : 'Ver repetición'}</button>}
+            {screen === 'studio' && detail?.status === 'running' && <button onClick={() => post('pause')}>Pausar</button>}
+            {screen === 'studio' && detail && events.length > 0 && <button disabled={replaying} onClick={() => { setReplaying(true); setReplay((n) => n + 1) }}>{replaying ? 'Reproduciendo…' : 'Ver repetición'}</button>}
             <button onClick={() => settingsDialog.current?.showModal()}>Configuración</button>
             <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
             <button onClick={() => supabase.current?.auth.signOut()}>Cerrar sesión</button>
@@ -181,7 +188,9 @@ export function App() {
 
       {error && <p className="error" role="alert">{error} <button onClick={() => setError('')}>Cerrar</button></p>}
 
-      <main>
+      {screen === 'producciones' && <Admin act={act} onOpen={(id) => { setPid(id); go('studio') }} />}
+      {screen === 'equipo' && me && <Team me={me.email} act={act} />}
+      <main hidden={screen !== 'studio'}>
         <section className="stage-floor">
           <Office key={pid ?? 'empty'} scheme={scheme} events={events} replay={replay} selected={selected} onSelect={setSelected} onReplayEnd={endReplay} />
           {!projects.length && (
@@ -232,7 +241,7 @@ export function App() {
           <label className="check"><input type="checkbox" checked={settings.humanReview} onChange={(e) => act(async () => setSettings(await api<Settings>('/settings', 'PUT', { humanReview: e.target.checked })))} />
             <span><strong>Revisión humana en cada etapa</strong>Cuando el auditor aprueba una etapa, el proyecto espera tu visto bueno. Apagada, avanza solo. El auditor corre siempre.</span></label>
           <label className="check"><input type="checkbox" checked={settings.simulation} onChange={(e) => act(async () => setSettings(await api<Settings>('/settings', 'PUT', { simulation: e.target.checked })))} />
-            <span><strong>Modo simulación</strong>Los agentes escriben entregables de muestra y no gastan. Apagado, cada agente llama a Claude y genera imagen, video, voz y música de verdad: consume tu saldo de Anthropic, fal.ai y ElevenLabs hasta el tope del proyecto.</span></label>
+            <span><strong>Modo simulación</strong>Los agentes escriben entregables de muestra y no gastan. Apagado, cada agente llama a Claude y genera imagen, video, voz y música de verdad: consume tu saldo de Anthropic, fal.ai y ElevenLabs hasta el tope del proyecto. Vale para los proyectos nuevos: cada proyecto conserva el modo con el que se creó.</span></label>
           <div className="dialog-actions"><button className="primary">Listo</button></div>
         </form>
       </dialog>
@@ -283,12 +292,16 @@ function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onRe
   const [comment, setComment] = useState('')
   const [agents, setAgents] = useState<string[]>([])
   const [cap, setCap] = useState(detail.budget_cap * 2)
-  useEffect(() => { setRejecting(false); setComment(''); setAgents([]); setCap(detail.budget_cap * 2) }, [detail.currentStage, detail.status, detail.budget_cap])
+  // Cada decisión tomada cierra el panel: dos aprobaciones seguidas de la misma etapa no comparten comentario ni marcas.
+  const decisions = useMemo(() => events.filter((e) => e.type === 'gate.decided').length, [events])
+  useEffect(() => { setRejecting(false); setComment(''); setAgents([]); setCap(detail.budget_cap * 2) }, [detail.currentStage, detail.status, detail.budget_cap, decisions])
   // El servidor tarda en confirmar; mientras tanto los botones quedan bloqueados para no enviar dos veces.
   const [sending, setSending] = useState(false)
   const post = (path: string, body?: unknown) => { setSending(true); return postNow(path, body).finally(() => setSending(false)) }
   const { status, reason } = detail
   const master = useMemo(() => masterPath(events), [events])
+  // Agentes de etapas anteriores marcados para repetir: devolverles trabajo reabre esas etapas y cuesta más.
+  const earlier = stage ? agents.filter((a) => !stage.agents.some((x) => x.id === a)).length : 0
   // La pieza final se ve aquí mismo desde que existe: en la aprobación del corte, en la entrega y al terminar.
   const piece = master && <div className="decision-media"><Media path={`/projects/${detail.id}/files/${master}`} name="master.mp4" /></div>
 
@@ -314,8 +327,8 @@ function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onRe
                 {stage.agents.map((a) => <label key={a.id} className="chip"><input type="checkbox" checked={agents.includes(a.id)} onChange={(e) => setAgents((xs) => e.target.checked ? [...xs, a.id] : xs.filter((x) => x !== a.id))} />{a.name.replace(/ Agents?$/, '')}</label>)}
               </fieldset>
               {scheme.stages.indexOf(stage) > 0 && (
-                <details>
-                  <summary>El problema viene de una etapa anterior</summary>
+                <details open={earlier > 0 || undefined}>
+                  <summary>El problema viene de una etapa anterior{earlier > 0 && ` (${earlier} marcado${earlier > 1 ? 's' : ''})`}</summary>
                   <p className="note">Marca al agente que debe rehacer su trabajo, por ejemplo quien generó una toma defectuosa. Todo lo que se hizo después se actualiza a partir de lo ya entregado, y las etapas reabiertas vuelven a pasar por su auditor y por tu aprobación. Cuesta más que una devolución dentro de la etapa.</p>
                   {scheme.stages.slice(0, scheme.stages.indexOf(stage)).map((s) => (
                     <fieldset key={s.id}><legend>{s.name}</legend>

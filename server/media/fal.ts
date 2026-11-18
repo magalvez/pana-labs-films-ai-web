@@ -41,9 +41,13 @@ async function fal(endpoint: string, input: object, timeoutMs: number): Promise<
     await sleep(3000)
   }
   // Un trabajo que falla dentro del modelo termina "COMPLETED" y trae el error en la respuesta.
-  const result = await retry(() => call(response_url))
-  if (!result.ok) throw await fail(result)
-  return result.json()
+  return retry(async () => {
+    const result = await call(response_url)
+    // Un 5xx o un 429 al recoger el resultado es pasajero: el trabajo ya está hecho y cobrado, se insiste.
+    if (result.status >= 500 || result.status === 429) throw new Error(`fal.ai respondió ${result.status} al recoger el resultado de ${endpoint}`)
+    if (!result.ok) throw Object.assign(await fail(result), { final: true })
+    return result.json()
+  })
 }
 
 /** Reintenta lo que falla por red: a estas alturas el trabajo ya está hecho y pagado. */
@@ -52,7 +56,7 @@ async function retry<T>(fn: () => Promise<T>, times = 3): Promise<T> {
     try {
       return await fn()
     } catch (err) {
-      if (i >= times) throw err
+      if (i >= times || (err as { final?: boolean }).final) throw err
       await sleep(2000 * i)
     }
   }

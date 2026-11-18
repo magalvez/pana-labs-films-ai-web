@@ -14,7 +14,8 @@ export const MODELS = {
   music: { model: 'music_v1', usdPerMinute: 0.15 },
   sfx: { model: 'eleven_text_to_sound_v2', usdPerMinute: 0.12 },
   // Revisión de video en movimiento. Esta tarifa de Gemini 3.8 Flash vale hasta el 31/dic/2026; después se duplica.
-  review: { model: 'gemini-3.8-flash', usdPerMTokIn: 0.75, usdPerMTokOut: 3.75 },
+  // `fallback` cuesta lo mismo y se usa cuando el principal responde que está saturado.
+  review: { model: 'gemini-3.8-flash', fallback: 'gemini-3.6-flash', usdPerMTokIn: 0.75, usdPerMTokOut: 3.75 },
 } as const
 
 export const PRICE_LIST = `Tarifas de generación vigentes, en USD:
@@ -23,5 +24,5 @@ export const PRICE_LIST = `Tarifas de generación vigentes, en USD:
 - Video final (${MODELS.video.final.endpoint}, sin audio): ${MODELS.video.final.usdPerSecond} por segundo, en clips de 5 o 10 segundos.
 - Voz (ElevenLabs ${MODELS.speech.model}): ${MODELS.speech.usdPer1kChars} por mil caracteres.
 - Música (ElevenLabs): ${MODELS.music.usdPerMinute} por minuto. Efectos de sonido: ${MODELS.sfx.usdPerMinute} por minuto.
-- Revisión de video en movimiento (review_video): unos 0.01 a 0.03 por consulta sobre un clip corto.
+- Revisión de video en movimiento (review_video): unos 0.02 por cada 15 segundos de video.
 - Montaje, color, mezcla, títulos y versiones: sin costo, se hacen en el servidor.`

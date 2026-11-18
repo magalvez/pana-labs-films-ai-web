@@ -53,6 +53,11 @@ test('el montaje con ffmpeg produce un máster con la duración, el tamaño y la
     assert.equal((await probe(f('instante.jpg'))).width, 1280)
     await preview(f('master.mp4'), f('tramo.jpg'), m.durationSeconds, { at: 1, span: 0.5 })
     assert.equal((await probe(f('tramo.jpg'))).width, 1280)
+    // Un encadenado sin material suficiente en la toma anterior falla con un mensaje claro, no con un corte más corto.
+    await assert.rejects(cut([{ file: f('a.mp4'), start: 1.5, duration: 0.5 }, { file: f('b.mp4'), start: 0, duration: 1, crossfade: 0.5 }], f('corto.mp4')), /le falta material/)
+    // Un fundido más largo que el corte no deja la pieza a medio fundir.
+    await cut([{ file: f('a.mp4'), start: 0, duration: 0.5 }], f('fundido.mp4'), { seconds: 3, color: '#2b1a12' })
+    assert.equal((await probe(f('fundido.mp4'))).durationSeconds, 0.5)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

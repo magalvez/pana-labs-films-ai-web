@@ -9,7 +9,9 @@ import type { AgentRun, AuditRun, Brand, Files, Input, Runner, Verdict } from '.
 
 const MODEL = 'claude-sonnet-5-5'
 // USD por millón de tokens de Claude Sonnet 5.5. Actualizar si cambia la tarifa.
-const PRICE = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }
+// Lo que ya se envió en un paso anterior se relee de la caché a una vigésima parte del precio de entrada;
+// guardarlo cuesta un 25 % más, una sola vez.
+const PRICE = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }
 const MAX_STEPS = 80
 const MAX_READ_CHARS = 200_000
 
@@ -69,7 +71,9 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
     try {
       const runner = client.beta.messages.toolRunner(
         // En streaming: los entregables largos no caben en el límite de tiempo de una petición normal.
-        { model: MODEL, max_tokens: 32000, system, tools, max_iterations: MAX_STEPS, stream: true, messages: [{ role: 'user', content: prompt }] },
+        // `cache_control` marca el final de cada petición como punto de caché. Un agente da decenas de pasos y en cada uno
+        // reenvía todo lo anterior, imágenes incluidas: con la caché, esa parte repetida se cobra como lectura.
+        { model: MODEL, max_tokens: 32000, system, tools, max_iterations: MAX_STEPS, stream: true, cache_control: { type: 'ephemeral' }, messages: [{ role: 'user', content: prompt }] },
         { signal: AbortSignal.any([timeout, stop.controller.signal, cancelled]) },
       )
       for await (const stream of runner) {

@@ -9,6 +9,7 @@ import { pgDb } from '../store.ts'
 import { createEngine } from './pipeline.ts'
 import { simRunner as realSimRunner } from './simRunner.ts'
 import { createApp } from '../app.ts'
+import { createUsers } from '../users.ts'
 import { brandDir, type Db, type Files, type Runner } from './types.ts'
 
 const AGENTS = commercial.stages.flatMap((s) => s.agents).length
@@ -64,6 +65,15 @@ test('sin revisión humana, un proyecto recorre las 5 etapas', async () => {
   assert.equal(p.steps.length, AGENTS)
   assert.deepEqual(p.stages.map((s) => s.status), Array(5).fill('approved'))
   assert.equal(p.steps[0].model, 'simulación')
+})
+
+test('un proyecto conserva el modo con el que se creó aunque cambie el interruptor', async () => {
+  const { engine } = await setup()
+  const sim = await engine.createProject({ name: 'Simulado', brief: 'x', budgetCap: 5 })
+  await engine.setSettings({ simulation: false })
+  const real = await engine.createProject({ name: 'Real', brief: 'x', budgetCap: 5 })
+  assert.equal((await engine.getProject(sim.id)).simulation, true)
+  assert.equal((await engine.getProject(real.id)).simulation, false)
 })
 
 test('un rechazo del auditor relanza solo al agente señalado', async () => {
@@ -359,7 +369,7 @@ test('el tope nuevo al reanudar debe superar lo ya gastado', async () => {
 
 test('la subida de marca decide el tipo por el contenido y rechaza lo que no es imagen', async () => {
   const { engine } = await setup()
-  const app = createApp({ engine, publicConfig: { supabaseUrl: '', supabaseAnonKey: '' }, auth: async (t) => (t === 'ok' ? 'qa' : null) })
+  const app = createApp({ engine, publicConfig: { supabaseUrl: '', supabaseAnonKey: '' }, auth: async (t) => (t === 'ok' ? { email: 'qa@pana.test', role: 'admin' } : null) })
   const send = (bytes: Uint8Array | string, type: string, kind: string) => {
     const form = new FormData()
     form.set('file', new File([bytes as BlobPart], 'x', { type })); form.set('kind', kind)
@@ -435,4 +445,190 @@ test('a un agente devuelto que termina sin cambiar nada se le avisa una vez', as
   assert.equal(feedbacks[0], 'El guion dura 40 s')
   assert.match(feedbacks[1]!, /terminaste sin escribir ni generar ningún archivo/)
   assert.equal((await engine.getProject(id)).status, 'waiting_human')
+})
+
+// ---- Regresiones de la segunda revisión de código (17/nov/2026) ----
+
+test('una decisión se toma una sola vez y no resucita un proyecto cancelado', async () => {
+  const { engine } = await setup()
+  const id = await start(engine)
+  // Doble clic: la segunda decisión llega cuando la primera ya movió el proyecto.
+  const results = await Promise.allSettled([engine.decide(id, { approve: true }), engine.decide(id, { approve: true })])
+  assert.deepEqual(results.map((r) => r.status).sort(), ['fulfilled', 'rejected'])
+  await engine.advance(id)
+  assert.equal((await engine.eventsAfter(id)).filter((e) => e.type === 'gate.decided').length, 1)
+  // Cancelado en el gate: una devolución tardía ya no lo pone en marcha.
+  await engine.cancel(id)
+  await assert.rejects(engine.decide(id, { approve: false, comment: 'tarde' }), /no está esperando/)
+  assert.equal((await engine.getProject(id)).status, 'cancelled')
+})
+
+test('no se puede devolver trabajo a un agente de una etapa posterior', async () => {
+  const { engine } = await setup()
+  const id = await start(engine)
+  await assert.rejects(engine.decide(id, { approve: false, comment: 'x', agents: ['editor'] }), /no es de esta etapa ni de una anterior/)
+  assert.equal((await engine.getProject(id)).status, 'waiting_human')
+})
+
+test('al retomar una versión interrumpida se trae de la anterior solo lo que falta', async () => {
+  const seen: string[][] = []
+  let crash = true, rejected = false
+  const base = simRunner()
+  const flaky: Runner = {
+    runAuditor: async (run) => (rejected ? base.runAuditor(run) : ((rejected = true), { approved: false, costUsd: 0, issues: [{ agent: 'story-architect', problem: 'Acorta el guion' }] })),
+    runAgent: async (run) => {
+      if (run.agent.id !== 'story-architect' || run.version === 1) return base.runAgent(run)
+      seen.push((await run.files.list(run.dir)).sort())
+      if (!crash) return base.runAgent(run)
+      crash = false
+      // Reescribe un entregable, deja uno propio y se cae antes de terminar.
+      await run.files.write(`${run.dir}/script.md`, 'guion corregido a medias')
+      await run.files.write(`${run.dir}/notas.md`, 'apuntes')
+      await run.files.removeDir(run.dir.replace('/v2', '/v2-no-existe'))
+      throw new Error('se cayó')
+    },
+  }
+  const { engine, files } = await setup(flaky)
+  const id = await start(engine)
+  assert.equal((await engine.getProject(id)).status, 'failed')
+  // Simula que la caída ocurrió antes de copiar la Story Bible de la versión 1.
+  const dir = `${id}/strategy/story-architect/v2`
+  const kept = new Map<string, Uint8Array>()
+  for (const f of ['script.md', 'notas.md']) kept.set(f, (await files.readBytes(`${dir}/${f}`))!)
+  await files.removeDir(dir)
+  for (const [f, bytes] of kept) await files.writeBytes(`${dir}/${f}`, bytes, 'text/plain')
+  await engine.resume(id)
+  await engine.advance(id)
+  assert.deepEqual(seen, [['script.md', 'story-bible.md'], ['notas.md', 'script.md', 'story-bible.md']])
+})
+
+test('un reintento no arranca si el intento anterior agotó el presupuesto', async () => {
+  let calls = 0
+  const base = simRunner()
+  const greedy: Runner = {
+    ...base,
+    runAgent: async (run) => {
+      if (run.agent.id !== 'brief-strategy') return base.runAgent(run)
+      calls++
+      await run.spend(5)
+      return { costUsd: 0, model: 'x' } // entrega incompleta: provocaría un reintento
+    },
+  }
+  const { engine } = await setup(greedy)
+  const p = await engine.getProject(await start(engine, 5))
+  assert.deepEqual([calls, p.status, p.reason, p.spent], [1, 'paused', 'budget', 5])
+})
+
+// ---- Administración, equipo y vistas previas para clientes ----
+
+test('el informe de costos separa la primera pasada de las repeticiones y cuadra con lo gastado', async () => {
+  const base = simRunner({ rejectOnce: ['strategy'] })
+  const paid: Runner = {
+    runAgent: async (run) => { await run.spend(run.agent.id === 'story-architect' ? 2 : 1); return base.runAgent(run) },
+    runAuditor: async (run) => { await run.spend(0.5); return base.runAuditor(run) },
+  }
+  const { engine } = await setup(paid)
+  const id = await start(engine)
+  const r = await engine.costReport(id)
+  // 4 agentes + auditoría rechazada, luego se repite el primero y se audita otra vez.
+  assert.deepEqual([r.totalUsd, r.firstPassUsd, r.reworkUsd, r.rejections], [7, 5.5, 1.5, 1])
+  assert.deepEqual(r.byStage[0], { id: 'strategy', name: 'Strategy & Development', usd: 7, firstPassUsd: 5.5, reworkUsd: 1.5, runs: 7, repeats: 2 })
+  assert.deepEqual(r.byAgent.slice(0, 2).map((a) => [a.id, a.usd, a.runs, a.repeats]), [['brief-strategy', 2, 2, 1], ['story-architect', 2, 1, 0]])
+  assert.equal(r.runs.length, 7)
+  const [row] = await engine.overview()
+  assert.deepEqual([row.id, row.spent, row.runs, row.reworks, row.approved, row.stages, row.master], [id, 7, 5, 1, 0, 5, null])
+})
+
+test('borrar una producción se lleva sus archivos, y exige que no esté en marcha', async () => {
+  const { engine, files } = await setup()
+  await engine.setSettings({ humanReview: false })
+  const id = await start(engine)
+  const master = `${id}/postproduction/motion-graphics/v1/master.mp4`
+  assert.ok(await files.readBytes(master))
+  const share = await engine.createShare(id, 'qa@pana.test')
+  await engine.deleteProject(id)
+  assert.equal(await files.readBytes(master), null)
+  assert.equal(await files.read(`${id}/client/report.md`), null)
+  assert.deepEqual(await engine.overview(), [])
+  assert.equal(await engine.openShare(share.token), null)
+  await assert.rejects(engine.getProject(id), /no encontrado/)
+})
+
+test('un cliente ve la pieza y la memoria con su enlace, y nada más', async () => {
+  const { engine } = await setup()
+  await engine.setSettings({ humanReview: false })
+  const id = await start(engine)
+  const users = createUsers({ db: async () => [], owners: [], identity: { create: async () => {}, remove: async () => {} } })
+  const app = createApp({ engine, users, publicConfig: { supabaseUrl: '', supabaseAnonKey: '' }, auth: async (t) => (t === 'admin' ? { email: 'jefa@pana.test', role: 'admin' } : t === 'miembro' ? { email: 'edita@pana.test', role: 'member' } : null) })
+  const as = (token: string, path: string, init: RequestInit = {}) => app.request(path, { ...init, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...init.headers } })
+
+  // Solo un administrador comparte, y solo cuando hay pieza que enseñar.
+  assert.equal((await as('miembro', `/api/admin/projects/${id}/shares`, { method: 'POST', body: '{}' })).status, 403)
+  const { token } = await (await as('admin', `/api/admin/projects/${id}/shares`, { method: 'POST', body: '{"days":7}' })).json()
+  assert.match(token, /^[\w-]{32}$/)
+
+  // Sin sesión: el enlace basta para ver, y un secreto inventado no revela nada.
+  const page = await (await app.request(`/api/public/${token}`)).json()
+  assert.deepEqual([page.name, page.videos.map((v: any) => v.label)], ['Prueba', ['Pieza principal', 'Versión']])
+  assert.match(page.report, /## La idea/)
+  assert.equal(page.projectId, undefined)
+  assert.equal((await app.request(`/api/public/${'x'.repeat(32)}`)).status, 404)
+  assert.equal((await app.request(`/api/projects/${id}`)).status, 401)
+
+  // El video admite peticiones por tramos, que es como lo pide un navegador.
+  const whole = await app.request(`/api/public/${token}/video/0`)
+  assert.deepEqual([whole.status, whole.headers.get('content-type'), (await whole.arrayBuffer()).byteLength], [200, 'video/mp4', 3])
+  const part = await app.request(`/api/public/${token}/video/0`, { headers: { range: 'bytes=1-' } })
+  assert.deepEqual([part.status, part.headers.get('content-range'), new Uint8Array(await part.arrayBuffer())], [206, 'bytes 1-2/3', new Uint8Array([2, 3])])
+  assert.equal((await app.request(`/api/public/${token}/video/9`)).status, 404)
+
+  // Las visitas se cuentan y el enlace se puede revocar.
+  const [share] = await (await as('admin', `/api/admin/projects/${id}/shares`)).json()
+  assert.deepEqual([share.views, share.active, share.createdBy], [1, true, 'jefa@pana.test'])
+  assert.equal((await as('admin', `/api/admin/projects/${id}/shares/${token}`, { method: 'DELETE' })).status, 200)
+  assert.equal((await app.request(`/api/public/${token}`)).status, 404)
+  assert.equal((await app.request(`/api/public/${token}/video/0`)).status, 404)
+
+  // Borrar exige escribir el nombre exacto.
+  assert.equal((await as('admin', `/api/admin/projects/${id}`, { method: 'DELETE', body: '{"confirm":"otra"}' })).status, 400)
+  assert.equal((await as('admin', `/api/admin/projects/${id}`, { method: 'DELETE', body: '{"confirm":"Prueba"}' })).status, 200)
+})
+
+test('el equipo: solo los administradores lo gestionan y nadie se queda fuera por error', async () => {
+  const { db } = await setup()
+  const accounts = new Map<string, string>()
+  const users = createUsers({ db, owners: ['dueno@pana.test'], identity: { create: async (email, password) => void accounts.set(email, password), remove: async (email) => void accounts.delete(email) } })
+  assert.equal(await users.roleOf('dueno@pana.test'), 'admin')
+  assert.equal(await users.roleOf('desconocida@pana.test'), null)
+
+  // Sin contraseña se genera una fuerte, que solo se devuelve en ese momento.
+  const made = await users.create({ email: ' Edita@Pana.test ', role: 'member' }, 'dueno@pana.test')
+  assert.equal(made.email, 'edita@pana.test')
+  assert.equal(made.password, accounts.get('edita@pana.test'))
+  assert.ok(made.password!.length >= 20)
+  assert.equal(await users.roleOf('edita@pana.test'), 'member')
+  assert.equal((await users.create({ email: 'jefa@pana.test', role: 'admin', password: 'una-clave-larga' }, 'dueno@pana.test')).password, null)
+
+  await assert.rejects(users.create({ email: 'edita@pana.test', role: 'member' }, 'dueno@pana.test'), /ya tiene acceso/)
+  await assert.rejects(users.create({ email: 'sin-arroba', role: 'member' }, 'dueno@pana.test'), /correo válido/)
+  await assert.rejects(users.create({ email: 'otra@pana.test', role: 'superadmin' }, 'dueno@pana.test'), /rol/)
+  await assert.rejects(users.create({ email: 'otra@pana.test', role: 'member', password: 'corta' }, 'dueno@pana.test'), /10 caracteres/)
+  await assert.rejects(users.remove('dueno@pana.test', 'jefa@pana.test'), /archivo \.env/)
+  await assert.rejects(users.remove('jefa@pana.test', 'jefa@pana.test'), /ti mismo/)
+  await assert.rejects(users.setRole('jefa@pana.test', 'member', 'jefa@pana.test'), /tu propio rol/)
+
+  await users.setRole('edita@pana.test', 'admin', 'jefa@pana.test')
+  assert.deepEqual((await users.list()).map((u) => [u.email, u.role, u.owner]), [['dueno@pana.test', 'admin', true], ['edita@pana.test', 'admin', false], ['jefa@pana.test', 'admin', false]])
+  await users.remove('edita@pana.test', 'jefa@pana.test')
+  assert.equal(await users.roleOf('edita@pana.test'), null)
+  assert.equal(accounts.has('edita@pana.test'), false)
+
+  // Por la API: un miembro no puede ni ver la lista.
+  const { engine } = await setup()
+  const app = createApp({ engine, users, publicConfig: { supabaseUrl: '', supabaseAnonKey: '' }, auth: async (t) => (t === 'admin' ? { email: 'jefa@pana.test', role: 'admin' } : t === 'miembro' ? { email: 'm@pana.test', role: 'member' } : null) })
+  const get = (token: string, path: string) => app.request(path, { headers: { authorization: `Bearer ${token}` } })
+  assert.equal((await get('miembro', '/api/admin/users')).status, 403)
+  assert.equal((await get('miembro', '/api/admin/projects')).status, 403)
+  assert.deepEqual(await (await get('miembro', '/api/me')).json(), { email: 'm@pana.test', role: 'member' })
+  assert.equal((await (await get('admin', '/api/admin/users')).json()).length, 2)
 })
