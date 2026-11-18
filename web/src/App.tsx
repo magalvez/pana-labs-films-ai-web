@@ -7,7 +7,7 @@ import { Team } from './Team'
 import { Office } from './office/Office'
 import type { Ev, SchemeT, StageT } from './office/world'
 
-type Project = { id: string; name: string; brief: string; scheme: string; status: string; reason: string | null; budget_cap: number; spent: number }
+type Project = { id: string; name: string; brief: string; scheme: string; status: string; reason: string | null; budget_cap: number; spent: number; simulation: boolean }
 type Step = { stage: string; agent: string; version: number; status: string; feedback: string | null; model: string | null }
 type Brand = { name: string; kit: string }
 type Config = { supabaseUrl: string; supabaseAnonKey: string }
@@ -154,7 +154,7 @@ export function App() {
             <span>Producción</span>
             <select value={pid ?? ''} onChange={(e) => setPid(e.target.value)} disabled={!projects.length}>
               {!projects.length && <option value="">Sin producciones</option>}
-              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.simulation ? ' (simulación)' : ''}</option>)}
             </select>
           </label>
           <ol className="stages" aria-label="Etapas">
@@ -167,6 +167,7 @@ export function App() {
           {detail && (
             <>
               <div className="field"><span>Estado</span><strong className={`status ${detail.status}`}>{STATUS[detail.status]}</strong></div>
+              <div className="field"><span>Modo</span><strong>{detail.simulation ? 'Simulación, no gasta' : 'Real'}</strong></div>
               <div className="field budget">
                 <span>Presupuesto</span>
                 <strong>{usd(detail.spent)} de {usd(detail.budget_cap)}</strong>

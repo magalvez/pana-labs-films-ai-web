@@ -3,7 +3,7 @@ import { api } from './api'
 import { Markdown } from './markdown'
 import { Media } from './media'
 
-type Row = { id: string; name: string; brief: string; status: string; reason: string | null; brand: string | null; budget_cap: number; spent: number; created_at: string; approved: number; stages: number; runs: number; reworks: number; generation: number; master: string | null; shares: number; last_activity: string | null }
+type Row = { id: string; name: string; brief: string; status: string; reason: string | null; brand: string | null; budget_cap: number; spent: number; simulation: boolean; created_at: string; approved: number; stages: number; runs: number; reworks: number; generation: number; master: string | null; shares: number; last_activity: string | null }
 type Run = { stage: string; who: string; name: string; kind: 'agente' | 'auditor' | 'memoria'; n: number; usd: number; repeat: boolean; startedAt: string; endedAt: string }
 type Costs = {
   totalUsd: number; generationUsd: number; modelUsd: number; firstPassUsd: number; reworkUsd: number; rejections: number; startedAt: string | null; lastActivityAt: string | null
@@ -80,7 +80,7 @@ export function Admin({ act, onOpen }: { act: Act; onOpen: (id: string) => void 
   if (!rows) return <div className="backlot"><p className="boot">Abriendo el libro de producción…</p></div>
   // Las simulaciones se entregan con costo cero: no cuentan para el costo medio.
   const delivered = rows.filter((r) => r.status === 'done')
-  const paid = delivered.filter((r) => r.spent > 0)
+  const paid = delivered.filter((r) => !r.simulation)
   const total = rows.reduce((a, r) => a + r.spent, 0)
   const generation = rows.reduce((a, r) => a + r.generation, 0)
   const current = rows.find((r) => r.id === selected) ?? null
@@ -120,7 +120,7 @@ export function Admin({ act, onOpen }: { act: Act; onOpen: (id: string) => void 
                 <span className="strip-side">
                   <span className={`status ${r.status}`}>{STATUS[r.status] ?? r.status}</span>
                   <span className="strip-cost">{usd(r.spent)}<small> de {usd(r.budget_cap)}</small></span>
-                  <span className="strip-tags">{r.reworks > 0 && <em>{r.reworks === 1 ? '1 repetición' : `${r.reworks} repeticiones`}</em>}{r.shares > 0 && <em>compartida</em>}</span>
+                  <span className="strip-tags">{r.simulation && <em>simulación</em>}{r.reworks > 0 && <em>{r.reworks === 1 ? '1 repetición' : `${r.reworks} repeticiones`}</em>}{r.shares > 0 && <em>compartida</em>}</span>
                 </span>
                 <span className="holes" aria-hidden="true" />
               </button>
