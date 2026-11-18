@@ -29,7 +29,7 @@ const RULES = `Reglas de trabajo:
 /** Agentes reales sobre la API de Claude, con una lista cerrada de herramientas confinadas al proyecto. */
 export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; mediaTimeoutMs?: number }): Runner {
   const client = new Anthropic()
-  const timeoutMs = opts.timeoutMs ?? 10 * 60_000
+  const timeoutMs = opts.timeoutMs ?? 15 * 60_000
   // Un agente que genera video espera minutos por cada toma.
   const mediaTimeoutMs = opts.mediaTimeoutMs ?? 60 * 60_000
   const role = (id: string) => readFileSync(join(opts.agentsDir, `${id}.md`), 'utf8')
@@ -73,7 +73,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
         // En streaming: los entregables largos no caben en el límite de tiempo de una petición normal.
         // `cache_control` marca el final de cada petición como punto de caché. Un agente da decenas de pasos y en cada uno
         // reenvía todo lo anterior, imágenes incluidas: con la caché, esa parte repetida se cobra como lectura.
-        { model: MODEL, max_tokens: 32000, system, tools, max_iterations: MAX_STEPS, stream: true, cache_control: { type: 'ephemeral' }, messages: [{ role: 'user', content: prompt }] },
+        { model: MODEL, max_tokens: 64000, system, tools, max_iterations: MAX_STEPS, stream: true, cache_control: { type: 'ephemeral' }, messages: [{ role: 'user', content: prompt }] },
         { signal: AbortSignal.any([timeout, stop.controller.signal, cancelled]) },
       )
       for await (const stream of runner) {
@@ -97,7 +97,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
     if (stop.error) throw stop.error
     if (!last || last.stop_reason === 'refusal') throw new Error('El modelo rechazó la tarea por sus políticas de seguridad.')
     if (last.stop_reason === 'tool_use') throw new Error(`El agente agotó sus ${MAX_STEPS} pasos sin terminar. Lo que alcanzó a generar se conserva: al reintentar lo retoma.`)
-    if (last.stop_reason === 'max_tokens') throw new Error('La respuesta del agente se cortó por longitud.')
+    if (last.stop_reason === 'max_tokens') throw new Error('La respuesta del agente se cortó por longitud. Lo que alcanzó a escribir se conserva: al reintentar lo retoma.')
     const text = last.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n').trim()
     return { text }
   }

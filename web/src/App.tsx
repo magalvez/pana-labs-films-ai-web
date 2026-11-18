@@ -149,7 +149,17 @@ export function App() {
               <button aria-current={screen === 'equipo' ? 'page' : undefined} onClick={() => go('equipo')}>Equipo</button>
             </nav>
           )}
-          {screen === 'studio' && <>
+          <div className="actions">
+            <span className="loading" role="status">{loading > 0 && 'Cargando…'}</span>
+            {screen === 'studio' && detail?.status === 'running' && <button onClick={() => post('pause')}>Pausar</button>}
+            {screen === 'studio' && detail && events.length > 0 && <button disabled={replaying} onClick={() => { setReplaying(true); setReplay((n) => n + 1) }}>{replaying ? 'Reproduciendo…' : 'Ver repetición'}</button>}
+            <button onClick={() => settingsDialog.current?.showModal()}>Configuración</button>
+            <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
+            <button onClick={() => supabase.current?.auth.signOut()}>Cerrar sesión</button>
+          </div>
+        </div>
+        {screen === 'studio' && (
+        <div className="slate-row second">
           <label className="field">
             <span>Producción</span>
             <select value={pid ?? ''} onChange={(e) => setPid(e.target.value)} disabled={!projects.length}>
@@ -175,16 +185,8 @@ export function App() {
               </div>
             </>
           )}
-          </>}
-          <div className="actions">
-            <span className="loading" role="status">{loading > 0 && 'Cargando…'}</span>
-            {screen === 'studio' && detail?.status === 'running' && <button onClick={() => post('pause')}>Pausar</button>}
-            {screen === 'studio' && detail && events.length > 0 && <button disabled={replaying} onClick={() => { setReplaying(true); setReplay((n) => n + 1) }}>{replaying ? 'Reproduciendo…' : 'Ver repetición'}</button>}
-            <button onClick={() => settingsDialog.current?.showModal()}>Configuración</button>
-            <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
-            <button onClick={() => supabase.current?.auth.signOut()}>Cerrar sesión</button>
-          </div>
         </div>
+        )}
       </header>
 
       {error && <p className="error" role="alert">{error} <button onClick={() => setError('')}>Cerrar</button></p>}
