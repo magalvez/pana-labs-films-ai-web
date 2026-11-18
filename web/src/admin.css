@@ -230,3 +230,11 @@ button.quiet { border-color: transparent; text-decoration: underline; padding: 3
   .marquee h1 { font-size: 30px; }
   .programme { width: auto; margin: 0; padding: 0; border: 0; background: #fff; }
 }
+
+/* El encargo: los datos con los que se creó la producción. */
+.order dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 24px; margin: 0 0 18px; }
+.order dt { font-size: 13px; color: #5b5547; }
+.order dd { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
+.order h5 { margin: 14px 0 4px; font-size: 14px; color: #5b5547; font-weight: 400; }
+.order-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
+.order-files { margin: 0 0 10px; padding-left: 20px; }

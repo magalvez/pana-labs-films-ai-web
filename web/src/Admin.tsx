@@ -3,7 +3,7 @@ import { api } from './api'
 import { Markdown } from './markdown'
 import { Media } from './media'
 
-type Row = { id: string; name: string; brief: string; status: string; reason: string | null; brand: string | null; budget_cap: number; spent: number; simulation: boolean; created_at: string; approved: number; stages: number; runs: number; reworks: number; generation: number; master: string | null; shares: number; last_activity: string | null }
+type Row = { id: string; name: string; brief: string; scheme: string; status: string; reason: string | null; brand: string | null; budget_cap: number; spent: number; simulation: boolean; created_at: string; approved: number; stages: number; runs: number; reworks: number; generation: number; master: string | null; shares: number; last_activity: string | null }
 type Run = { stage: string; who: string; name: string; kind: 'agente' | 'auditor' | 'memoria'; n: number; usd: number; repeat: boolean; startedAt: string; endedAt: string }
 type Costs = {
   totalUsd: number; generationUsd: number; modelUsd: number; firstPassUsd: number; reworkUsd: number; rejections: number; startedAt: string | null; lastActivityAt: string | null
@@ -16,6 +16,7 @@ type Share = { token: string; createdBy: string; createdAt: string; expiresAt: s
 type Act = (fn: () => Promise<unknown>) => Promise<boolean>
 
 const STATUS: Record<string, string> = { running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
+const SCHEMES: Record<string, string> = { commercial: 'Comercial publicitario' }
 const usd = (n: number) => `$${n.toFixed(2)}`
 const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : 0)
 const day = (ts: string) => new Date(ts).toLocaleDateString('es', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -143,6 +144,17 @@ function Sheet({ row, act, onOpen, onChanged, onDeleted }: { row: Row; act: Act;
   const [copied, setCopied] = useState('')
   const [confirm, setConfirm] = useState('')
   const [cap, setCap] = useState(Math.ceil(row.budget_cap * 1.5))
+  const [brand, setBrand] = useState<{ kit: string; files: string[] } | null>(null)
+  // La biblioteca de marca es del cliente y se comparte entre sus proyectos: aquí se ve como está hoy.
+  useEffect(() => {
+    setBrand(null)
+    if (!row.brand) return
+    let gone = false
+    const name = row.brand
+    void Promise.all([api<{ name: string; kit: string }[]>('/brands'), api<string[]>(`/brands/${encodeURIComponent(name)}/assets`)])
+      .then(([all, files]) => { if (!gone) setBrand({ kit: all.find((b) => b.name === name)?.kit ?? '', files }) }).catch(() => {})
+    return () => { gone = true }
+  }, [row.id, row.brand])
 
   const reload = () => act(async () => {
     const [c, s] = await Promise.all([api<Costs>(`/admin/projects/${row.id}/costs`), api<Share[]>(`/admin/projects/${row.id}/shares`)])
@@ -181,6 +193,27 @@ function Sheet({ row, act, onOpen, onChanged, onDeleted }: { row: Row; act: Act;
       </header>
 
       {row.master && <div className="sheet-video"><Media path={`/projects/${row.id}/files/${row.master}`} name="master.mp4" /></div>}
+
+      <section className="order">
+        <h4>El encargo</h4>
+        <dl>
+          <div><dt>Nombre</dt><dd>{row.name}</dd></div>
+          <div><dt>Cliente</dt><dd>{row.brand ?? 'Sin cliente'}</dd></div>
+          <div><dt>Tipo de pieza</dt><dd>{SCHEMES[row.scheme] ?? row.scheme}</dd></div>
+          <div><dt>Modo</dt><dd>{row.simulation ? 'Simulación, no gasta' : 'Real'}</dd></div>
+          <div><dt>Tope de presupuesto</dt><dd>{usd(row.budget_cap)}</dd></div>
+          <div><dt>Creada</dt><dd>{new Date(row.created_at).toLocaleString('es', { dateStyle: 'long', timeStyle: 'short' })}</dd></div>
+        </dl>
+        <h5>Brief</h5>
+        <p className="order-text">{row.brief}</p>
+        {row.brand && <>
+          <h5>Biblioteca de marca de {row.brand}</h5>
+          <p className="order-text">{brand ? brand.kit || 'Sin texto guardado.' : 'Cargando…'}</p>
+          <h5>Archivos reales del cliente</h5>
+          {brand?.files.length ? <ul className="order-files">{brand.files.map((f) => <li key={f}>{f}</li>)}</ul> : <p>{brand ? 'Ninguno.' : 'Cargando…'}</p>}
+          <p className="hint">La biblioteca y los archivos son del cliente y se comparten entre sus producciones: se muestran como están hoy.</p>
+        </>}
+      </section>
 
       {!costs ? <p className="hint">Sumando…</p> : (
         <>

@@ -254,12 +254,14 @@ export function App() {
 function BrandFiles({ brand, act }: { brand: string; act: (fn: () => Promise<unknown>) => Promise<boolean> }) {
   const [files, setFiles] = useState<string[]>([])
   const [sending, setSending] = useState(false)
+  // Cuenta las subidas: confirma la última y obliga a recargar la miniatura cuando un logo reemplaza a otro.
+  const [done, setDone] = useState(0)
   const path = `/brands/${encodeURIComponent(brand)}/assets`
   const current = useRef(path)
   current.current = path
   useEffect(() => {
     let gone = false
-    setFiles([])
+    setFiles([]); setDone(0)
     // Espera a que termines de escribir el nombre antes de consultar.
     const timer = window.setTimeout(() => api<string[]>(path).then((f) => { if (!gone) setFiles(f) }).catch(() => {}), 400)
     return () => { gone = true; clearTimeout(timer) }
@@ -274,7 +276,7 @@ function BrandFiles({ brand, act }: { brand: string; act: (fn: () => Promise<unk
         form.set('file', file); form.set('kind', kind)
         const saved = await upload<string[]>(path, form)
         // Si el nombre de la marca cambió mientras subía, esta lista ya no es la que se muestra.
-        if (current.current === path) setFiles(saved)
+        if (current.current === path) { setFiles(saved); setDone((n) => n + 1) }
       }
     }).finally(() => { setSending(false); input.value = '' })
   }
@@ -283,7 +285,11 @@ function BrandFiles({ brand, act }: { brand: string; act: (fn: () => Promise<unk
       <legend>Archivos reales de «{brand}»</legend>
       <label>Logo<input type="file" accept="image/png,image/jpeg,image/svg+xml" onChange={(e) => send('logo', e.currentTarget)} /></label>
       <label>Fotos del producto<input type="file" multiple accept="image/png,image/jpeg" onChange={(e) => send('product', e.currentTarget)} /></label>
-      <p className="note">{sending ? 'Subiendo…' : files.length ? `Guardados: ${files.join(', ')}.` : 'Sin archivos todavía.'} Escribe el nombre completo de la marca antes de subir: se guardan con ese nombre. El logo y el producto nunca se generan con IA: el cierre usa este logo y las tomas usan estas fotos como referencia.</p>
+      <p className="saved" role="status">{sending ? 'Subiendo…' : done ? 'Archivo guardado.' : files.length ? `${files.length} archivo${files.length > 1 ? 's' : ''} guardado${files.length > 1 ? 's' : ''} de este cliente.` : 'Sin archivos todavía.'}</p>
+      {files.length > 0 && <ul className="thumbs">{files.map((f) => (
+        <li key={f}>{mediaKind(f) === 'image' && <Media key={done} path={`/brands/${encodeURIComponent(brand)}/files/${f}`} name={f} />}<span>{f}</span></li>
+      ))}</ul>}
+      <p className="note">Escribe el nombre completo de la marca antes de subir: se guardan con ese nombre. El logo y el producto nunca se generan con IA: el cierre usa este logo y las tomas usan estas fotos como referencia.</p>
     </fieldset>
   )
 }
