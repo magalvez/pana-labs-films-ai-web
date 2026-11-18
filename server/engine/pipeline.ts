@@ -327,6 +327,8 @@ export function createEngine(opts: {
       job = loop(id)
         .catch(async (err) => {
           // Solo un proyecto en marcha pasa a detenido: si la persona lo canceló o pausó, esa decisión se respeta.
+          // Quedarse sin dinero a mitad de un agente no es un fallo: es la misma pausa por tope, y al reanudar retoma lo hecho.
+          if (err instanceof Error && err.name === 'BudgetError') return pauseIfRunning(id, 'budget')
           const reason = err instanceof Error ? err.message : String(err)
           const changed = await db("UPDATE projects SET status = 'failed', reason = ? WHERE id = ? AND status = 'running' RETURNING id", reason, id)
           if (changed.length) await emit(id, 'project.status', { status: 'failed', reason })

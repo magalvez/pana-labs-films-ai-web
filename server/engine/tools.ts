@@ -105,7 +105,13 @@ export function mediaTools(ctx: ToolContext) {
   async function paid(estimateUsd: number, tmp: string, name: string, generate: () => Promise<fal.Generated>, meta: Pick<NewAsset, 'tool' | 'provider' | 'prompt' | 'inputs' | 'license'>) {
     if (busy.has(name)) return `Error: ya hay otra generación en curso con el nombre ${name}. Usa un nombre distinto para cada archivo.`
     const left = ctx.budgetLeft() - reserved
-    if (estimateUsd > left) return `Error: esto cuesta unos $${estimateUsd.toFixed(2)} y al proyecto le quedan $${Math.max(left, 0).toFixed(2)}. No generes más; entrega lo que tengas y dilo en tu resumen.`
+    if (estimateUsd > left) {
+      // Sin dinero para generar, el agente no puede terminar su trabajo. Se detiene aquí y la persona decide si sube el tope:
+      // dejarlo entregar a medias quema una ronda entera de revisión y auditoría sobre material que no cambió.
+      const err = Object.assign(new Error(`Falta presupuesto: generar ${name} cuesta unos $${estimateUsd.toFixed(2)} y al proyecto le quedan $${Math.max(left, 0).toFixed(2)}.`), { name: 'BudgetError' })
+      ctx.abort(err)
+      return `Error: ${err.message}`
+    }
     reserved += estimateUsd
     busy.add(name)
     try {
