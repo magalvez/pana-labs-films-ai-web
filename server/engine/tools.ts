@@ -137,7 +137,7 @@ export function mediaTools(ctx: ToolContext) {
   }
 
   const tools: any[] = [
-    tool('view_media', 'Mira un archivo de imagen, video o audio. Devuelve sus medidas técnicas (tamaño, duración, sonoridad), su procedencia y, si es imagen o video, lo que se ve: de un video, cuatro cuadros repartidos en toda su duración. Para revisar un defecto en un video, pide el instante con `at_seconds` (un cuadro a buen tamaño) o un tramo con `at_seconds` y `span_seconds` (cuatro cuadros seguidos de ese tramo).', z.object({
+    tool('view_media', 'Mira una imagen, o mide un video o un audio. Devuelve sus medidas técnicas (tamaño, duración, sonoridad) y su procedencia. De una imagen muestra lo que se ve. De un video solo muestra cuadros si pides un instante con `at_seconds` (un cuadro a buen tamaño) o un tramo con `at_seconds` y `span_seconds` (cuatro cuadros): úsalo para confirmar un defecto concreto. Para juzgar un video entero usa review_video.', z.object({
       path,
       at_seconds: z.number().min(0).max(600).optional().describe('Solo video: segundo que quieres ver.'),
       span_seconds: z.number().min(0.1).max(10).optional().describe('Solo video, junto con at_seconds: duración del tramo a repartir en cuatro cuadros.'),
@@ -150,6 +150,10 @@ export function mediaTools(ctx: ToolContext) {
       const text = `${input.path}: ${describe(m)}.${origin ? ` Origen: ${origin.tool}, ${origin.model}.` : input.path.startsWith('brand/') ? ' Origen: archivo real del cliente.' : ''}`
       // Un .mp4 sin imagen (solo audio) no tiene nada que mostrar.
       if (kind === 'audio' || !m.width) return text
+      // Un video sin instante pedido no se muestra: juzgarlo en movimiento cuesta centavos con review_video, y cada cuadro
+      // que ve Claude se vuelve a pagar en todos los pasos siguientes del agente.
+      // Sin revisión en movimiento en este servidor, los cuatro cuadros son la única vista del clip entero.
+      if (kind === 'video' && input.at_seconds === undefined && reviewAvailable()) return `${text} No se muestran cuadros: juzga el clip con review_video y, para confirmar un defecto concreto, pide el instante con at_seconds.`
       const sheet = join(tmp, 'vista.jpg')
       if (input.at_seconds !== undefined && m.durationSeconds && input.at_seconds > m.durationSeconds) throw new Error(`el video dura ${m.durationSeconds} s y pides ver el segundo ${input.at_seconds}`)
       // En el último instante ya no queda ningún cuadro que sacar: se retrocede lo justo para mostrar el final.

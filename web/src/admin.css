@@ -238,3 +238,27 @@ button.quiet { border-color: transparent; text-decoration: underline; padding: 3
 .order h5 { margin: 14px 0 4px; font-size: 14px; color: #5b5547; font-weight: 400; }
 .order-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; }
 .order-files { margin: 0 0 10px; padding-left: 20px; }
+
+/* ---------------------------------------------------------------- Configuración */
+.config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; align-items: start; }
+.config .models { grid-column: 1 / -1; }
+.config .check { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; margin-bottom: 14px; }
+.config .check strong, .config .limit strong { display: block; }
+.config .limit { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; padding: 10px 0; border-top: 2px solid var(--paper-line); }
+.config .limit > span:first-child { color: #5b5547; font-size: 14px; }
+.config .limit strong { color: var(--ink); font-size: 16px; }
+.config .limit-input { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.config .limit-input input { width: 6.5em; text-align: right; }
+.config .model-key { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 4px; font-size: 14px; color: #5b5547; }
+.config .model-key strong { color: var(--ink); }
+.config .model-actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 0 0 8px; font-size: 14px; }
+.config .models table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+.config .models caption { text-align: left; font-family: var(--pixel); font-size: 20px; padding-bottom: 4px; border-bottom: 2px solid var(--ink); }
+.config .models th { text-align: left; font-weight: 400; padding: 6px 8px 6px 0; }
+.config .models th em { color: #5b5547; }
+.config .models td { padding: 6px 0; text-align: right; }
+.config .models td small { color: #5b5547; padding-right: 12px; }
+.config .models tr + tr { border-top: 1px solid var(--paper-line); }
+.config .models tr.custom th { font-weight: 700; }
+.config .models .note { margin-top: 16px; }
+@media (max-width: 900px) { .config-grid { grid-template-columns: minmax(0, 1fr); } }

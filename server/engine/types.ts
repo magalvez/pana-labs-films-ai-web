@@ -1,3 +1,4 @@
+import type { Usage } from './models.ts'
 import { createHash } from 'node:crypto'
 
 /** Familias de herramientas de generación y montaje que un agente puede usar. Ver y medir archivos lo pueden hacer todos. */
@@ -91,6 +92,10 @@ export type Input = { stage: string; agent: string; dir: string }
 
 export type AgentRun = {
   project: Project
+  /** Modelo de Claude elegido para este agente en la configuración. Sin él, el de por defecto. */
+  model?: string
+  /** Tiempo máximo de la ejecución, de la configuración. */
+  timeoutMs?: number
   stage: StageDef
   agent: AgentDef
   version: number
@@ -105,7 +110,7 @@ export type AgentRun = {
   to: string
   say: (text: string) => void
   /** Registra al instante el costo de una herramienta de pago, para que no se pierda si el agente falla después. */
-  spend(usd: number): Promise<void>
+  spend(usd: number, use?: Usage): Promise<void>
   record(asset: NewAsset): Promise<void>
   assets(): Promise<Asset[]>
   /** Se activa cuando una persona cancela el proyecto: el agente debe dejar de trabajar y de gastar. */
@@ -114,13 +119,15 @@ export type AgentRun = {
 
 export type AuditRun = {
   project: Project
+  model?: string
+  timeoutMs?: number
   stage: StageDef
   deliverables: Input[]
   files: Files
   brand: Brand | null
   say: (text: string) => void
   assets(): Promise<Asset[]>
-  spend(usd: number): Promise<void>
+  spend(usd: number, use?: Usage): Promise<void>
   signal: AbortSignal
 }
 

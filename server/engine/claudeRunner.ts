@@ -7,12 +7,8 @@ import { PRICE_LIST } from '../media/prices.ts'
 import { announce, kindOf, mediaTools } from './tools.ts'
 import type { AgentRun, AuditRun, Brand, Files, Input, Runner, Verdict } from './types.ts'
 import { readReferences } from './types.ts'
+import { DEFAULT_MODEL, MODELS, usdOf, type Usage } from './models.ts'
 
-const MODEL = 'claude-sonnet-5-5'
-// USD por millón de tokens de Claude Sonnet 5.5. Actualizar si cambia la tarifa.
-// Lo que ya se envió en un paso anterior se relee de la caché a una vigésima parte del precio de entrada;
-// guardarlo cuesta un 25 % más, una sola vez.
-const PRICE = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }
 const MAX_STEPS = 80
 const MAX_READ_CHARS = 200_000
 
@@ -22,7 +18,8 @@ const RULES = `Reglas de trabajo:
 - No inventes datos del cliente. Lo que el brief no diga, márcalo como supuesto.
 - Las imágenes, el video y el audio solo existen si una herramienta te confirmó que los guardó. No afirmes haber generado nada que una herramienta no haya confirmado, y cita los archivos por la ruta que te devolvió.
 - El logo, el empaque y los textos de marca nunca se generan con IA. El producto se mantiene fiel usando las fotos reales del cliente como referencia; el logo solo entra en el cierre de marca.
-- Un video es movimiento: lo que ves con view_media son cuadros sueltos. Para juzgar una toma o un corte, pide una revisión en movimiento con review_video y luego confirma el instante con view_media.
+- Un video se juzga con review_video, que lo ve en movimiento, lo oye y cuesta centavos. view_media de un video da sus medidas; solo muestra cuadros si pides un instante con at_seconds, y eso es para confirmar un defecto concreto que la revisión señaló, no para repasar una toma que salió bien. Cada cuadro que miras se vuelve a pagar en todos tus pasos siguientes.
+- No vuelvas a mirar una imagen o un instante que ya miraste en esta misma ejecución.
 - Si tú mismo ves que algo tuyo contradice la Story Bible o el brief y tienes cómo corregirlo, corrígelo antes de entregar. No lo entregues como "problema abierto" ni "decisión pendiente": lo que la Bible ya fija no es una decisión.
 - Izquierda y derecha de una persona o de un objeto se dicen respecto a la persona o al objeto, no respecto al cuadro.
 - Cita solo archivos vigentes, por la ruta que aparece en la lista de entregables. Si te devuelven el trabajo, actualiza también las rutas y los datos que cambiaron en el trabajo de otros desde tu entrega anterior.
@@ -34,9 +31,9 @@ const RULES = `Reglas de trabajo:
 /** Agentes reales sobre la API de Claude, con una lista cerrada de herramientas confinadas al proyecto. */
 export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; mediaTimeoutMs?: number }): Runner {
   const client = new Anthropic()
-  const timeoutMs = opts.timeoutMs ?? 15 * 60_000
-  // Un agente que genera video espera minutos por cada toma.
-  const mediaTimeoutMs = opts.mediaTimeoutMs ?? 60 * 60_000
+  /** El límite llega de la configuración con cada ejecución; las opciones del runner mandan, para las pruebas. */
+  const limit = (media: boolean, fromRun?: number) => (media ? opts.mediaTimeoutMs : opts.timeoutMs) ?? fromRun ?? (media ? 60 : 15) * 60_000
+  const pick = (model?: string) => (model && Object.hasOwn(MODELS, model) ? model : DEFAULT_MODEL)
   const role = (id: string) => readFileSync(join(opts.agentsDir, `${id}.md`), 'utf8')
   const brandNote = (brand: Brand | null) => {
     if (!brand) return ''
@@ -76,16 +73,17 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
 
   type Stop = { controller: AbortController; error?: Error }
   /** `charge` registra el costo de cada respuesta en el momento: si el agente falla después, lo gastado ya está contado. */
-  async function loop(system: string, prompt: string, tools: any[], say: (t: string) => void, limitMs: number, stop: Stop, cancelled: AbortSignal, charge: (usd: number) => Promise<void>) {
+  async function loop(system: string, prompt: string, tools: any[], say: (t: string) => void, limitMs: number, stop: Stop, cancelled: AbortSignal, charge: (usd: number, use: Usage) => Promise<void>, model: string) {
     const timeout = AbortSignal.timeout(limitMs)
     const halt = AbortSignal.any([timeout, stop.controller.signal, cancelled])
     let last: Anthropic.Beta.BetaMessage | undefined
     try {
       const runner = client.beta.messages.toolRunner(
+        // El esfuerzo va explícito: cada modelo trae otro por defecto y cambiar de modelo no debe cambiar cuánto razona.
         // En streaming: los entregables largos no caben en el límite de tiempo de una petición normal.
         // `cache_control` marca el final de cada petición como punto de caché. Un agente da decenas de pasos y en cada uno
         // reenvía todo lo anterior, imágenes incluidas: con la caché, esa parte repetida se cobra como lectura.
-        { model: MODEL, max_tokens: 64000, system, tools, max_iterations: MAX_STEPS, stream: true, cache_control: { type: 'ephemeral' }, messages: [{ role: 'user', content: prompt }] },
+        { model, max_tokens: 64000, output_config: { effort: 'high' }, system, tools, max_iterations: MAX_STEPS, stream: true, cache_control: { type: 'ephemeral' }, messages: [{ role: 'user', content: prompt }] },
         { signal: halt },
       )
       // El límite también vale mientras corre una herramienta: una descarga o un proceso colgado no deja al agente parado para siempre.
@@ -94,7 +92,8 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
         const message = await stream.finalMessage()
         last = message
         const u = message.usage
-        await charge((u.input_tokens * PRICE.input + u.output_tokens * PRICE.output + (u.cache_read_input_tokens ?? 0) * PRICE.cacheRead + (u.cache_creation_input_tokens ?? 0) * PRICE.cacheWrite) / 1e6)
+        const use: Usage = { model, input: u.input_tokens, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens }
+        await charge(usdOf(use), use)
         for (const block of message.content) if (block.type === 'tool_use') say(block.name === 'read_file' ? `Leyendo ${(block.input as any).path}` : block.name === 'write_file' ? `Escribiendo ${(block.input as any).name}` : (announce(block.name, block.input) ?? 'Emitiendo veredicto'))
       } })()])
     } catch (err) {
@@ -117,7 +116,8 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
   }
 
   return {
-    async runAgent({ project, stage, agent, version, dir, files, brand, inputs, feedback, to, say, spend, record, assets, signal }: AgentRun) {
+    async runAgent({ project, stage, agent, version, dir, files, brand, inputs, feedback, to, say, spend, record, assets, signal, model: chosen, timeoutMs }: AgentRun) {
+      const model = pick(chosen)
       const written = new Set<string>()
       // Lo que el agente escribió o generó en esta ejecución, sin contar lo que heredó de la versión anterior.
       const changed = new Set<string>()
@@ -152,13 +152,13 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       const kept = carried.length ? `\nEn tu carpeta ${rel}/ ya están estos archivos de tu trabajo anterior: ${carried.join(', ')}. Revísalos antes de generar nada: rehaz solo lo que haga falta y reescribe los entregables que cambien. Lo demás se conserva tal cual y no se vuelve a pagar.` : ''
       const redo = feedback ? `\n\nTu entrega anterior fue devuelta. Corrige esto: ${feedback}${kept}` : carried.length ? `\n\nUn intento anterior de este trabajo se interrumpió antes de terminar.${kept}` : ''
       const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}${await refNote(files, project.id)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}.\n${PRICE_LIST}\n\nEntregables previos disponibles:\n${await describe(files, project.id, inputs)}\n\nTu carpeta de trabajo es ${rel}/. Tus entregables: ${agent.deliverables.join(', ')}.${redo}`
-      const { text } = await loop(system, prompt, [readTool(files, project.id), writeTool, ...media], say, agent.tools?.length ? mediaTimeoutMs : timeoutMs, stop, signal, async (usd) => { used += usd; await spend(usd) })
+      const { text } = await loop(system, prompt, [readTool(files, project.id), writeTool, ...media], say, limit(Boolean(agent.tools?.length), timeoutMs), stop, signal, async (usd, use) => { used += usd; await spend(usd, use) }, model)
       // El resumen del traspaso lo escribe el motor a partir de la respuesta final del agente.
       await files.write(`${dir}/handoff.json`, JSON.stringify({ agent: agent.id, stage: stage.id, version, to, summary: text || `${agent.name} entregó sin resumen.`, files: [...written], changed: [...changed] }, null, 2))
-      return { costUsd: 0, model: MODEL }
+      return { costUsd: 0, model }
     },
 
-    async runAuditor({ project, stage, deliverables, files, brand, say, assets, spend, signal }: AuditRun): Promise<Verdict> {
+    async runAuditor({ project, stage, deliverables, files, brand, say, assets, spend, signal, model, timeoutMs }: AuditRun): Promise<Verdict> {
       const stop: Stop = { controller: new AbortController() }
       let used = 0
       // El auditor mira y mide los archivos, y consulta su procedencia. No genera nada.
@@ -185,8 +185,8 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       })
       // El auditor recibe brief, criterios y entregables. Nunca el razonamiento de los agentes auditados.
       const system = `Eres ${stage.auditor.name} de Pana Films Lab. Tu trabajo es impedir que un error avance a la siguiente etapa.\n\n${role(stage.auditor.id)}\nCómo auditar:\n- Lee todos los entregables de la etapa con read_file, y la Story Bible si existe.
-- Los archivos de imagen, video y audio míralos con view_media: comprueba lo que se ve y sus medidas técnicas, no lo que dice el agente.
-- Un video no se juzga por cuadros sueltos. Antes de aprobar una toma o una pieza montada, pide con review_video una revisión en movimiento y pregunta por lo que los cuadros no muestran: cortes que saltan, objetos que aparecen o desaparecen de golpe, parpadeos y continuidad entre planos. Usa list_provenance para ver con qué modelo y licencia se hizo cada uno.\n- Comprueba cada criterio contra lo que dicen los archivos, no contra los resúmenes.\n- Rechaza solo por incumplimientos concretos de los criterios. No rechaces por gusto.\n- Si rechazas, señala al agente responsable y di exactamente qué debe corregir.
+- Las imágenes míralas con view_media. De video y audio, view_media da las medidas técnicas: compruébalas contra lo que dice el agente.
+- Un video se juzga con review_video, no por cuadros sueltos. Antes de aprobar una toma o una pieza montada, pide una revisión en movimiento y pregunta en una sola consulta por todo lo que te importa de ese clip: si la acción ocurre completa, cortes que saltan, objetos que aparecen o desaparecen, parpadeos, deformaciones y continuidad con las referencias. Mira un cuadro con view_media y at_seconds solo para confirmar un defecto que la revisión señaló y por el que vas a rechazar; una toma que la revisión da por buena no se mira cuadro a cuadro. Usa list_provenance para ver con qué modelo y licencia se hizo cada uno.\n- Comprueba cada criterio contra lo que dicen los archivos, no contra los resúmenes.\n- Rechaza solo por incumplimientos concretos de los criterios. No rechaces por gusto.\n- Si rechazas, señala al agente responsable y di exactamente qué debe corregir.
 - Pide solo lo que ese agente puede hacer con sus herramientas, que aparecen en el mensaje. Solo puedes devolver trabajo a los agentes de esta etapa.
 - Un defecto que nadie de esta etapa puede corregir (por ejemplo, una toma que habría que generar de nuevo en una etapa anterior) no se asigna a quien no puede arreglarlo: se declara aparte, empezando por "PARA LA PERSONA:", dentro del problema del agente más cercano, para que la persona decida en su aprobación. Rechaza por él solo si hace la pieza inservible.
 - Cada devolución cuesta dinero y tiempo: el primer veredicto lleva todos los incumplimientos que encuentres, no solo el más grave. No guardes ninguno para la siguiente ronda.
@@ -197,7 +197,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
 - Si el mensaje trae fotos de referencia de la persona, míralas: lo que un agente hizo por seguirlas no es un incumplimiento, y apartarse de ellas sí lo es.
 - En un reintento, comprueba primero lo que pediste la vez anterior. No añadas exigencias nuevas de gusto sobre trabajo que ya habías dado por bueno.\n- Termina llamando a submit_verdict.`
       const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}${await refNote(files, project.id)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}. Estas cifras son las del sistema y mandan sobre las que digan los documentos.\n\nEntregables de la etapa ${stage.name}:\n${await describe(files, project.id, deliverables)}\n\nAgentes de la etapa y lo que cada uno puede hacer:\n${stage.agents.map((a) => `- ${a.id}: escribe ${a.deliverables.join(', ')}${a.tools?.length ? `; herramientas: ${a.tools.join(', ')}` : '; sin herramientas de generación ni montaje'}`).join('\n')}`
-      await loop(system, prompt, [readTool(files, project.id), verdictTool, ...media], say, mediaTimeoutMs, stop, signal, async (usd) => { used += usd; await spend(usd) })
+      await loop(system, prompt, [readTool(files, project.id), verdictTool, ...media], say, limit(true, timeoutMs), stop, signal, async (usd, use) => { used += usd; await spend(usd, use) }, pick(model))
       if (!verdict) throw new Error(`${stage.auditor.name} terminó sin emitir veredicto.`)
       return { ...verdict, costUsd: 0 }
     },

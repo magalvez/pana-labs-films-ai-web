@@ -5,6 +5,7 @@ import type { Engine } from './engine/pipeline.ts'
 import type { Role, Users } from './users.ts'
 import { CONTENT_TYPES } from './engine/tools.ts'
 import { brandDir } from './engine/types.ts'
+import { DEFAULT_MODEL, MODELS, RECOMMENDED } from './engine/models.ts'
 
 // Lo que el cliente puede subir a su biblioteca de marca. El SVG solo sirve como logo: los modelos no lo leen como referencia.
 const MAX_BRAND_FILE = 5 * 1024 * 1024
@@ -128,7 +129,12 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
 
   app.get('/api/schemes', (c) => c.json(Object.values(engine.schemes)))
   app.get('/api/settings', async (c) => c.json(await engine.getSettings()))
-  app.put('/api/settings', async (c) => c.json(await engine.setSettings(await c.req.json())))
+  // La configuración decide cuánto se gasta: solo la cambian los administradores.
+  app.put('/api/settings', async (c) => {
+    if (c.get('role') !== 'admin') return c.json({ error: 'Solo un administrador puede cambiar la configuración' }, 403)
+    return c.json(await engine.setSettings(await json(c)))
+  })
+  app.get('/api/models', (c) => c.json({ models: Object.entries(MODELS).map(([id, m]) => ({ id, name: m.name, note: m.note })), default: DEFAULT_MODEL, recommended: RECOMMENDED }))
   app.get('/api/brands', async (c) => c.json(await engine.listBrands()))
 
   const brandFiles = async (name: string) => ((await engine.brandByName(name))?.assets ?? []).map((path) => path.split('/').pop()!)

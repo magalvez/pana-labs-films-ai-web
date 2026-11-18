@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Admin } from './Admin'
+import { Config, type Settings } from './Config'
 import { api, openFile, setOnExpired, setToken, upload } from './api'
 import { Media, mediaKind } from './media'
 import { Team } from './Team'
@@ -12,7 +13,6 @@ type Step = { stage: string; agent: string; version: number; status: string; fee
 type Brand = { name: string; kit: string }
 type Config = { supabaseUrl: string; supabaseAnonKey: string }
 type Detail = Project & { currentStage: string | null; stages: { stage: string; status: string; attempts: number }[]; steps: Step[] }
-type Settings = { humanReview: boolean; simulation: boolean }
 type Asset = { path: string; tool: string; model: string; costUsd: number; license: string; measurements: { durationSeconds: number | null; width: number | null; height: number | null; lufs: number | null } | null }
 
 /** La pieza final más reciente, si Motion Graphics ya la entregó. */
@@ -21,8 +21,8 @@ function masterPath(events: Ev[]): string | null {
   return done ? `${done.data.stage}/motion-graphics/v${done.data.version}/master.mp4` : null
 }
 
-type View = 'studio' | 'producciones' | 'equipo'
-const viewOf = (hash: string): View => (hash === '#/producciones' ? 'producciones' : hash === '#/equipo' ? 'equipo' : 'studio')
+type View = 'studio' | 'producciones' | 'equipo' | 'configuracion'
+const viewOf = (hash: string): View => (hash === '#/producciones' ? 'producciones' : hash === '#/equipo' ? 'equipo' : hash === '#/configuracion' ? 'configuracion' : 'studio')
 
 const STATUS: Record<string, string> = { running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera tu decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
 const usd = (n: number) => `$${n.toFixed(2)}`
@@ -59,7 +59,6 @@ export function App() {
   const supabase = useRef<SupabaseClient | null>(null)
   const pollNow = useRef(() => {})
   const newDialog = useRef<HTMLDialogElement>(null)
-  const settingsDialog = useRef<HTMLDialogElement>(null)
   const budgetDialog = useRef<HTMLDialogElement>(null)
 
   // Cuántas acciones siguen esperando respuesta del servidor: mientras haya alguna, la claqueta avisa.
@@ -148,13 +147,13 @@ export function App() {
               <button aria-current={screen === 'studio' ? 'page' : undefined} onClick={() => go('studio')}>Estudio</button>
               <button aria-current={screen === 'producciones' ? 'page' : undefined} onClick={() => go('producciones')}>Producciones</button>
               <button aria-current={screen === 'equipo' ? 'page' : undefined} onClick={() => go('equipo')}>Equipo</button>
+              <button aria-current={screen === 'configuracion' ? 'page' : undefined} onClick={() => go('configuracion')}>Configuración</button>
             </nav>
           )}
           <div className="actions">
             <span className="loading" role="status">{loading > 0 && 'Cargando…'}</span>
             {screen === 'studio' && detail?.status === 'running' && <button onClick={() => post('pause')}>Pausar</button>}
             {screen === 'studio' && detail && events.length > 0 && <button disabled={replaying} onClick={() => { setReplaying(true); setReplay((n) => n + 1) }}>{replaying ? 'Reproduciendo…' : 'Ver repetición'}</button>}
-            <button onClick={() => settingsDialog.current?.showModal()}>Configuración</button>
             <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
             <button onClick={() => supabase.current?.auth.signOut()}>Cerrar sesión</button>
           </div>
@@ -195,6 +194,7 @@ export function App() {
 
       {screen === 'producciones' && <Admin act={act} onOpen={(id) => { setPid(id); go('studio') }} />}
       {screen === 'equipo' && me && <Team me={me.email} act={act} />}
+      {screen === 'configuracion' && settings && <Config settings={settings} schemes={schemes} act={act} onChange={setSettings} />}
       <main hidden={screen !== 'studio'}>
         <section className="stage-floor">
           <Office key={pid ?? 'empty'} scheme={scheme} events={events} replay={replay} selected={selected} onSelect={setSelected} onReplayEnd={endReplay} />
@@ -242,7 +242,7 @@ export function App() {
             <label>Qué deben tomar los agentes de estas fotos<input name="referenceNote" type="text" maxLength={500} placeholder="Por ejemplo: el estilo de luz, el tipo de cocina y la edad de la protagonista" /></label>
             <p className="note">Todos los agentes las reciben desde Strategy, junto con esta indicación. Cuanto más concreta sea, menos rechazos y repeticiones. Podrás añadir más en cada aprobación.</p>
           </fieldset>
-          <label>Tope de presupuesto en dólares<input name="budgetCap" type="number" required min="1" step="1" defaultValue={50} /></label>
+          <label>Tope de presupuesto en dólares<input name="budgetCap" type="number" required min="1" step="1" key={settings?.defaultBudget} defaultValue={settings?.defaultBudget ?? 50} /></label>
           <p className="note">El motor se detiene y te pregunta cuando el gasto alcanza este tope.</p>
           <div className="dialog-actions"><button type="button" onClick={() => newDialog.current?.close()}>Cancelar</button><button className="primary">Crear proyecto</button></div>
         </form>
@@ -257,17 +257,6 @@ export function App() {
             <div className="dialog-actions"><button type="button" onClick={() => budgetDialog.current?.close()}>Cancelar</button><button className="primary">Guardar tope</button></div>
           </form>
         )}
-      </dialog>
-
-      <dialog ref={settingsDialog}>
-        <form method="dialog">
-          <h2>Configuración</h2>
-          <label className="check"><input type="checkbox" checked={settings.humanReview} onChange={(e) => act(async () => setSettings(await api<Settings>('/settings', 'PUT', { humanReview: e.target.checked })))} />
-            <span><strong>Revisión humana en cada etapa</strong>Cuando el auditor aprueba una etapa, el proyecto espera tu visto bueno. Apagada, avanza solo. El auditor corre siempre.</span></label>
-          <label className="check"><input type="checkbox" checked={settings.simulation} onChange={(e) => act(async () => setSettings(await api<Settings>('/settings', 'PUT', { simulation: e.target.checked })))} />
-            <span><strong>Modo simulación</strong>Los agentes escriben entregables de muestra y no gastan. Apagado, cada agente llama a Claude y genera imagen, video, voz y música de verdad: consume tu saldo de Anthropic, fal.ai y ElevenLabs hasta el tope del proyecto. Vale para los proyectos nuevos: cada proyecto conserva el modo con el que se creó.</span></label>
-          <div className="dialog-actions"><button className="primary">Listo</button></div>
-        </form>
       </dialog>
     </div>
   )

@@ -5,7 +5,16 @@ import { Media } from './media'
 
 type Row = { id: string; name: string; brief: string; scheme: string; status: string; reason: string | null; brand: string | null; budget_cap: number; spent: number; simulation: boolean; created_at: string; approved: number; stages: number; runs: number; reworks: number; generation: number; master: string | null; shares: number; last_activity: string | null }
 type Run = { stage: string; who: string; name: string; kind: 'agente' | 'auditor' | 'memoria'; n: number; usd: number; repeat: boolean; startedAt: string; endedAt: string }
+type Tokens = { input: number; cacheRead: number; cacheWrite: number; output: number }
+const TOKENS: [keyof Tokens, string, string][] = [
+  ['cacheRead', 'Releer lo ya enviado', 'Todo lo anterior de la conversación, imágenes incluidas, que se reenvía en cada paso. Se cobra a precio de caché.'],
+  ['cacheWrite', 'Guardar en caché', 'Lo nuevo de cada paso: resultados de herramientas e imágenes recién vistas.'],
+  ['input', 'Entrada sin caché', 'Lo que no pudo aprovechar la caché.'],
+  ['output', 'Lo que escribe Claude', 'Razonamiento, entregables y llamadas a herramientas.'],
+]
+const millions = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)} M` : `${Math.round(n / 1000)} mil`)
 type Costs = {
+  tokens: Tokens; tokensUsd: Tokens; byModel: { model: string; usd: number }[]
   totalUsd: number; generationUsd: number; modelUsd: number; firstPassUsd: number; reworkUsd: number; rejections: number; startedAt: string | null; lastActivityAt: string | null
   byStage: { id: string; name: string; usd: number; firstPassUsd: number; reworkUsd: number; runs: number; repeats: number }[]
   byAgent: { id: string; name: string; stage: string; kind: string; usd: number; runs: number; repeats: number }[]
@@ -263,6 +272,17 @@ function Sheet({ row, act, onOpen, onChanged, onDeleted }: { row: Row; act: Act;
               <table className="plain">
                 <thead><tr><th scope="col">Qué</th><th scope="col">Proveedor</th><th scope="col" className="num">Archivos</th><th scope="col" className="num">Costo</th></tr></thead>
                 <tbody>{costs.generation.map((g) => <tr key={`${g.provider}/${g.tool}`}><th scope="row">{TOOL[g.tool] ?? g.tool}</th><td>{g.provider}</td><td className="num">{g.files}</td><td className="num">{usd(g.usd)}</td></tr>)}</tbody>
+              </table>
+            )}
+          </section>
+
+          <section>
+            <h3>En qué se fueron los tokens de Claude</h3>
+            {!(costs.tokens.input + costs.tokens.cacheRead + costs.tokens.cacheWrite + costs.tokens.output) ? <p className="hint">Esta producción es anterior a la medición de tokens, o todavía no ha llamado a Claude.</p> : (
+              <table>
+                <thead><tr><th scope="col">Tipo</th><th scope="col">Qué es</th><th scope="col" className="num">Tokens</th><th scope="col" className="num">Costo</th></tr></thead>
+                <tbody>{TOKENS.map(([k, name, what]) => <tr key={k}><th scope="row">{name}</th><td>{what}</td><td className="num">{millions(costs.tokens[k])}</td><td className="num">{usd(costs.tokensUsd[k])}</td></tr>)}</tbody>
+                <tfoot><tr><th scope="row" colSpan={3}>Por modelo: {costs.byModel.map((m) => `${m.model} ${usd(m.usd)}`).join(' · ')}</th><td className="num">{usd(TOKENS.reduce((a, [k]) => a + costs.tokensUsd[k], 0))}</td></tr></tfoot>
               </table>
             )}
           </section>

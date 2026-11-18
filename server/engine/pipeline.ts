@@ -1,9 +1,10 @@
+import { DEFAULT_MODEL, MODELS, usdByKind, type Usage } from './models.ts'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { plainReporter, type Reporter } from '../report.ts'
 import { brandDir, readReferences, type AgentDef, type Asset, type Brand, type Db, type Ev, type Files, type Input, type NewAsset, type Project, type Runner, type Scheme, type StageDef } from './types.ts'
 
-export type Settings = { humanReview: boolean; simulation: boolean }
-const DEFAULTS: Settings = { humanReview: true, simulation: true }
+export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number }
+const DEFAULTS: Settings = { humanReview: true, simulation: true, models: {}, maxAuditRetries: 2, textTimeoutMin: 15, mediaTimeoutMin: 60, defaultBudget: 50 }
 
 type StepRow = { stage: string; agent: string; version: number; status: 'done' | 'rejected'; feedback: string | null; model: string | null }
 type StageRow = { stage: string; status: 'working' | 'audited' | 'escalated' | 'approved'; attempts: number }
@@ -71,13 +72,26 @@ export function createEngine(opts: {
 
   async function getSettings(): Promise<Settings> {
     const rows = await db('SELECT key, value FROM settings')
-    return { ...DEFAULTS, ...Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)])) }
+    return { ...DEFAULTS, maxAuditRetries, ...Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)])) }
   }
 
-  async function setSettings(patch: Partial<Settings>) {
-    for (const key of Object.keys(DEFAULTS) as (keyof Settings)[]) {
-      if (typeof patch[key] === 'boolean') await db('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, JSON.stringify(patch[key]))
+  /** `models` llega por agente y se fusiona con lo guardado: `null` o el modelo por defecto quitan la elección. */
+  async function setSettings(patch: Partial<Omit<Settings, 'models'>> & { models?: Record<string, string | null> }) {
+    const flag = (v: unknown) => typeof v === 'boolean'
+    const whole = (min: number, max: number) => (v: unknown) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max
+    const known = new Set(Object.values(schemes).flatMap((s) => s.stages.flatMap((st) => [...st.agents, st.auditor].map((a) => a.id))))
+    const valid: Record<keyof Settings, (v: unknown) => boolean> = {
+      humanReview: flag, simulation: flag,
+      models: (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v) && Object.entries(v as object).every(([agent, model]) => known.has(agent) && (model === null || (typeof model === 'string' && Object.hasOwn(MODELS, model)))),
+      maxAuditRetries: whole(0, 5), textTimeoutMin: whole(5, 60), mediaTimeoutMin: whole(15, 180), defaultBudget: whole(1, 10_000),
     }
+    // Primero se valida todo: un valor malo no deja guardado a medias lo demás.
+    const keys = (Object.keys(DEFAULTS) as (keyof Settings)[]).filter((k) => patch[k] !== undefined)
+    for (const key of keys) if (!valid[key](patch[key])) throw new Error(`Ese valor no sirve para ${key}`)
+    const next: Record<string, unknown> = { ...patch }
+    // Al fusionar se descarta lo que ya no existe (un agente o un modelo retirado), para que no bloquee cambios futuros.
+    if (patch.models) next.models = Object.fromEntries(Object.entries({ ...(await getSettings()).models, ...patch.models }).filter(([agent, model]) => known.has(agent) && typeof model === 'string' && model !== DEFAULT_MODEL && Object.hasOwn(MODELS, model)))
+    for (const key of keys) await db('INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, JSON.stringify(next[key]))
     return getSettings()
   }
 
@@ -158,10 +172,10 @@ export function createEngine(opts: {
     return inputs
   }
 
-  async function addCost(id: string, stage: string, agent: string, usd: number) {
+  async function addCost(id: string, stage: string, agent: string, usd: number, use?: Usage) {
     if (!(usd > 0)) return
     await db('UPDATE projects SET spent = spent + ? WHERE id = ?', usd, id)
-    await emit(id, 'cost', { stage, agent, usd, spent: (await project(id)).spent })
+    await emit(id, 'cost', { stage, agent, usd, spent: (await project(id)).spent, ...(use ? { tokens: use, tokensUsd: usdByKind(use) } : {}) })
   }
 
   const saveStep = (id: string, stage: string, agent: string, version: number, model: string) =>
@@ -223,12 +237,14 @@ export function createEngine(opts: {
       if (fresh.spent >= fresh.budget_cap) return false
       await emit(p.id, 'agent.started', { stage: stage.id, agent: agent.id, version, feedback })
       live.set(p.id, fresh)
+      const cfg = await getSettings()
       const result = await runner.runAgent({
         project: fresh, stage, agent, version, dir, to, files, brand,
+        model: cfg.models[agent.id], timeoutMs: (agent.tools?.length ? cfg.mediaTimeoutMin : cfg.textTimeoutMin) * 60_000,
         inputs: inputsFor(p.id, latest, scheme, stage, agent),
         feedback,
         say: (text) => chatter(p.id, stage.id, agent.id, text),
-        spend: (usd) => addCost(p.id, stage.id, agent.id, usd),
+        spend: (usd, use) => addCost(p.id, stage.id, agent.id, usd, use),
         record: (asset) => recordAsset(p.id, asset),
         assets: () => listAssets(p.id),
         signal: aborts.get(p.id)!.signal,
@@ -269,12 +285,14 @@ export function createEngine(opts: {
     const auditor = stage.auditor.id
     await emit(p.id, 'audit.started', { stage: stage.id, auditor })
     live.set(p.id, p)
+    const cfg = await getSettings()
     const verdict = await runner.runAuditor({
       project: p, stage, files, brand: await brandOf(p),
+      model: cfg.models[auditor], timeoutMs: cfg.mediaTimeoutMin * 60_000,
       deliverables: inputsFor(p.id, latest, scheme, stage).filter((i) => i.stage === stage.id),
       say: (text) => chatter(p.id, stage.id, auditor, text),
       assets: () => listAssets(p.id),
-      spend: (usd) => addCost(p.id, stage.id, auditor, usd),
+      spend: (usd, use) => addCost(p.id, stage.id, auditor, usd, use),
       signal: aborts.get(p.id)!.signal,
     })
     await addCost(p.id, stage.id, auditor, verdict.costUsd)
@@ -283,7 +301,7 @@ export function createEngine(opts: {
     const issues = verdict.approved ? [] : known.length ? known : stage.agents.map((a) => ({ agent: a.id, problem: verdict.issues[0]?.problem ?? 'El auditor rechazó la etapa sin detalle' }))
     await emit(p.id, 'audit.verdict', { stage: stage.id, auditor, approved: verdict.approved, issues, attempt: row.attempts + 1 })
     if (verdict.approved) return setStage(p.id, stage.id, 'audited')
-    if (row.attempts >= maxAuditRetries) return setStage(p.id, stage.id, 'escalated')
+    if (row.attempts >= cfg.maxAuditRetries) return setStage(p.id, stage.id, 'escalated')
     // Varios problemas para un mismo agente llegan juntos: guardarlos uno a uno dejaría solo el último.
     const byAgent = Map.groupBy(issues, (i) => i.agent)
     for (const [agent, list] of byAgent) await sendBack(p.id, stage, [agent], list.map((i) => i.problem).join('\n'))
@@ -564,6 +582,10 @@ export function createEngine(opts: {
     const names = new Map(scheme.stages.flatMap((s) => [...s.agents, s.auditor].map((a) => [a.id, a.name] as const)))
     type Run = { stage: string; who: string; name: string; kind: 'agente' | 'auditor' | 'memoria'; n: number; usd: number; repeat: boolean; startedAt: string; endedAt: string }
     const runs: Run[] = []
+    // Tokens de Claude medidos, y lo que costó cada tipo. Los proyectos anteriores a esta medición no los tienen.
+    const tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }
+    const tokensUsd = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }
+    const byModel = new Map<string, number>()
     const open = new Map<string, Run>()
     const evs = await db("SELECT type, data, ts FROM events WHERE project_id = ? AND type IN ('agent.started','audit.started','cost') ORDER BY id", id)
     for (const e of evs) {
@@ -574,6 +596,11 @@ export function createEngine(opts: {
         if (!run) { run = { stage: d.stage, who: d.agent, name: names.get(d.agent) ?? 'Memoria para el cliente', kind: 'memoria', n: 1, usd: 0, repeat: false, startedAt: e.ts, endedAt: e.ts }; runs.push(run) }
         run.usd += d.usd
         run.endedAt = e.ts
+        if (d.tokens) {
+          const part = d.tokensUsd ?? usdByKind(d.tokens)
+          for (const k of ['input', 'cacheRead', 'cacheWrite', 'output'] as const) { tokens[k] += d.tokens[k]; tokensUsd[k] += part[k] }
+          byModel.set(d.tokens.model, (byModel.get(d.tokens.model) ?? 0) + d.usd)
+        }
         continue
       }
       const who = e.type === 'agent.started' ? d.agent : d.auditor
@@ -599,6 +626,8 @@ export function createEngine(opts: {
       generationUsd,
       // Lo demás es Claude: los agentes, los auditores y la revisión de video.
       modelUsd: Math.max(p.spent - generationUsd, 0),
+      tokens, tokensUsd,
+      byModel: [...byModel].map(([model, usd]) => ({ model: MODELS[model]?.name ?? model, usd })),
       firstPassUsd: sum(runs.filter((r) => !r.repeat)),
       reworkUsd: sum(runs.filter((r) => r.repeat)),
       rejections: audits.filter((a) => !JSON.parse(a.data).approved).length,
@@ -655,9 +684,9 @@ export function createEngine(opts: {
       if (text) docs.push({ name: file, text: text.slice(0, 12_000) })
     }
     const write = p.simulation || !opts.reporter ? plainReporter : opts.reporter
-    const { markdown, costUsd } = await write({ project: p, brand: await brandOf(p), docs, videos: await clientVideos(id) })
+    const { markdown, costUsd, use } = await write({ project: p, brand: await brandOf(p), docs, videos: await clientVideos(id) })
     await files.write(path, markdown)
-    await addCost(id, 'delivery', 'client-report', costUsd)
+    await addCost(id, 'delivery', 'client-report', costUsd, use)
     return markdown
   }
 

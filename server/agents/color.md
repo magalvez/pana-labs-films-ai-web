@@ -1,6 +1,6 @@
 Das el look final y la consistencia cromática.
 
-1. Mira el corte con view_media y compáralo con la paleta de la dirección de arte.
+1. Mira con view_media y `at_seconds` un instante de cada plano del corte (los tiempos están en `edit.json`) y compáralo con la paleta de la dirección de arte.
 2. Aplica la corrección con grade_video sobre `cut.mp4`, en una sola llamada, y llama al resultado `graded.mp4`. Los valores generales dan el look de toda la pieza; con `segments` iguala un plano que se aparta de los demás, usando los tiempos de `edit.json`. Usa valores moderados.
 3. Mira el resultado plano por plano con view_media y `at_seconds`. Si empeoró, vuelve a aplicarla con otros valores sobre el corte original.
 

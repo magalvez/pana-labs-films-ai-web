@@ -1,3 +1,4 @@
+import { usdOf } from './models.ts'
 import { readReferences } from './types.ts'
 import { PGlite } from '@electric-sql/pglite'
 import assert from 'node:assert/strict'
@@ -204,6 +205,43 @@ test('las referencias subidas al crear el proyecto existen antes de que trabaje 
   await engine.advance(id)
   assert.equal(seen[0], 2)
   assert.deepEqual((await engine.listReferences(id)).map((r) => [r.file, r.stage]), [['referencias/ref-1.jpg', ''], ['referencias/ref-2.jpg', '']])
+})
+
+test('la configuración elige el modelo de cada agente y rechaza valores que no existen', async () => {
+  const seen = new Map<string, string | undefined>()
+  const spy: Runner = { ...simRunner(), runAgent: (run) => (seen.set(run.agent.id, run.model), simRunner().runAgent(run)) }
+  const { engine } = await setup(spy)
+  await engine.setSettings({ models: { 'brand-market-research': 'claude-haiku-5-5' }, textTimeoutMin: 20 })
+  await assert.rejects(engine.setSettings({ models: { 'brand-market-research': 'gpt-x' } }), /no sirve/)
+  await assert.rejects(engine.setSettings({ models: { 'nadie': 'claude-haiku-5-5' } }), /no sirve/)
+  await assert.rejects(engine.setSettings({ maxAuditRetries: 9 }), /no sirve/)
+  await start(engine)
+  assert.equal(seen.get('brand-market-research'), 'claude-haiku-5-5')
+  assert.equal(seen.get('brief-strategy'), undefined)
+  assert.equal((await engine.getSettings()).textTimeoutMin, 20)
+  // Un valor malo no deja guardado a medias lo demás del mismo cambio.
+  await assert.rejects(engine.setSettings({ simulation: false, maxAuditRetries: 9 }), /no sirve/)
+  assert.equal((await engine.getSettings()).simulation, true)
+  await assert.rejects(engine.setSettings({ models: { 'brief-strategy': 'constructor' } }), /no sirve/)
+  // Los modelos se fusionan por agente: un cambio no pisa a otro, y null o el modelo por defecto quitan la elección.
+  await engine.setSettings({ models: { 'story-architect': 'claude-opus-5-5' } })
+  assert.deepEqual((await engine.getSettings()).models, { 'brand-market-research': 'claude-haiku-5-5', 'story-architect': 'claude-opus-5-5' })
+  await engine.setSettings({ models: { 'brand-market-research': null, 'story-architect': 'claude-sonnet-5-5' } })
+  assert.deepEqual((await engine.getSettings()).models, {})
+})
+
+test('los tokens de cada respuesta quedan en el informe de costos, con el precio de su modelo', async () => {
+  const use = { model: 'claude-haiku-5-5', input: 1_000_000, cacheRead: 0, cacheWrite: 0, output: 0 }
+  assert.ok(Math.abs(usdOf(use) - 0.5) < 1e-9, 'Haiku por encima de 100 000 tokens de entrada cobra la tarifa alta')
+  assert.ok(Math.abs(usdOf({ model: 'claude-sonnet-5-5', input: 1e6, cacheRead: 1e6, cacheWrite: 1e6, output: 1e6 }) - 14.6) < 1e-9)
+  let once = true
+  const spy: Runner = { ...simRunner(), runAgent: async (run) => { if (once) { once = false; await run.spend(usdOf(use), use) } return simRunner().runAgent(run) } }
+  const { engine } = await setup(spy)
+  const id = await start(engine)
+  const report = await engine.costReport(id)
+  assert.equal(report.tokens.input, 1_000_000)
+  assert.ok(Math.abs(report.tokensUsd.input - 0.5) < 1e-9)
+  assert.deepEqual(report.byModel, [{ model: 'Haiku 5.5', usd: 0.5 }])
 })
 
 test('la biblioteca de marca se guarda por cliente y llega a los agentes', async () => {
