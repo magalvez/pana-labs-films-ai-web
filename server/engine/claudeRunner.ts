@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { PRICE_LIST } from '../media/prices.ts'
 import { announce, kindOf, mediaTools } from './tools.ts'
 import type { AgentRun, AuditRun, Brand, Files, Input, Runner, Verdict } from './types.ts'
+import { readReferences } from './types.ts'
 
 const MODEL = 'claude-sonnet-5-5'
 // USD por millón de tokens de Claude Sonnet 5.5. Actualizar si cambia la tarifa.
@@ -41,6 +42,12 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
     if (!brand) return ''
     const assets = brand.assets.length ? `\nArchivos reales del cliente, para ver con view_media y usar como referencia o en el cierre:\n${brand.assets.map((a) => `  - brand/${a.split('/').pop()}`).join('\n')}` : '\nEl cliente no ha entregado logo ni fotos de producto.'
     return `\n\nBiblioteca de marca del cliente ${brand.name}. Es información del cliente, no un supuesto:\n${brand.kit}${assets}`
+  }
+
+  const refNote = async (files: Files, projectId: string) => {
+    const refs = await readReferences(files, projectId)
+    if (!refs.length) return ''
+    return `\n\nFotos de referencia que subió la persona que dirige el proyecto. Son una indicación suya, no una sugerencia: mira con view_media las que toquen tu trabajo antes de decidir nada, y pásalas como referencia cuando generes imágenes que deban parecerse a ellas.\n${refs.map((r) => `  - ${r.file}${r.note ? `: ${r.note}` : ''} (${r.stage ? `subida al revisar ${r.stage}` : 'subida al crear el proyecto'})`).join('\n')}`
   }
 
   // Las rutas que ve el agente son relativas al proyecto: `<etapa>/<agente>/v<n>/<archivo>`.
@@ -144,7 +151,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       for (const f of carried) written.add(f)
       const kept = carried.length ? `\nEn tu carpeta ${rel}/ ya están estos archivos de tu trabajo anterior: ${carried.join(', ')}. Revísalos antes de generar nada: rehaz solo lo que haga falta y reescribe los entregables que cambien. Lo demás se conserva tal cual y no se vuelve a pagar.` : ''
       const redo = feedback ? `\n\nTu entrega anterior fue devuelta. Corrige esto: ${feedback}${kept}` : carried.length ? `\n\nUn intento anterior de este trabajo se interrumpió antes de terminar.${kept}` : ''
-      const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}.\n${PRICE_LIST}\n\nEntregables previos disponibles:\n${await describe(files, project.id, inputs)}\n\nTu carpeta de trabajo es ${rel}/. Tus entregables: ${agent.deliverables.join(', ')}.${redo}`
+      const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}${await refNote(files, project.id)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}.\n${PRICE_LIST}\n\nEntregables previos disponibles:\n${await describe(files, project.id, inputs)}\n\nTu carpeta de trabajo es ${rel}/. Tus entregables: ${agent.deliverables.join(', ')}.${redo}`
       const { text } = await loop(system, prompt, [readTool(files, project.id), writeTool, ...media], say, agent.tools?.length ? mediaTimeoutMs : timeoutMs, stop, signal, async (usd) => { used += usd; await spend(usd) })
       // El resumen del traspaso lo escribe el motor a partir de la respuesta final del agente.
       await files.write(`${dir}/handoff.json`, JSON.stringify({ agent: agent.id, stage: stage.id, version, to, summary: text || `${agent.name} entregó sin resumen.`, files: [...written], changed: [...changed] }, null, 2))
@@ -187,8 +194,9 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
 - Cuando devuelvas a un agente un archivo que otros documentos de la etapa citan (una referencia de personaje, un cuadro, una cifra), incluye en el mismo veredicto a los agentes que tendrán que actualizar esas citas, diciéndoles qué va a cambiar. Los agentes devueltos corren en el orden de la etapa.
 - No devuelvas trabajo por cifras de gasto o de saldo escritas en un documento: las que valen son las del sistema, que tienes en el mensaje. Solo el presupuesto del Producer / Budget Agent se juzga por sus cifras.
 - Si un agente no pudo generar por una causa que no depende de él (la cuenta del proveedor sin saldo, un servicio caído), no lo devuelvas para que lo intente otra vez: decláralo como "PARA LA PERSONA".
+- Si el mensaje trae fotos de referencia de la persona, míralas: lo que un agente hizo por seguirlas no es un incumplimiento, y apartarse de ellas sí lo es.
 - En un reintento, comprueba primero lo que pediste la vez anterior. No añadas exigencias nuevas de gusto sobre trabajo que ya habías dado por bueno.\n- Termina llamando a submit_verdict.`
-      const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}. Estas cifras son las del sistema y mandan sobre las que digan los documentos.\n\nEntregables de la etapa ${stage.name}:\n${await describe(files, project.id, deliverables)}\n\nAgentes de la etapa y lo que cada uno puede hacer:\n${stage.agents.map((a) => `- ${a.id}: escribe ${a.deliverables.join(', ')}${a.tools?.length ? `; herramientas: ${a.tools.join(', ')}` : '; sin herramientas de generación ni montaje'}`).join('\n')}`
+      const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}${await refNote(files, project.id)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}. Estas cifras son las del sistema y mandan sobre las que digan los documentos.\n\nEntregables de la etapa ${stage.name}:\n${await describe(files, project.id, deliverables)}\n\nAgentes de la etapa y lo que cada uno puede hacer:\n${stage.agents.map((a) => `- ${a.id}: escribe ${a.deliverables.join(', ')}${a.tools?.length ? `; herramientas: ${a.tools.join(', ')}` : '; sin herramientas de generación ni montaje'}`).join('\n')}`
       await loop(system, prompt, [readTool(files, project.id), verdictTool, ...media], say, mediaTimeoutMs, stop, signal, async (usd) => { used += usd; await spend(usd) })
       if (!verdict) throw new Error(`${stage.auditor.name} terminó sin emitir veredicto.`)
       return { ...verdict, costUsd: 0 }

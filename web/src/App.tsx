@@ -216,7 +216,9 @@ export function App() {
         <form method="dialog" onSubmit={(e) => {
           const f = new FormData(e.currentTarget), form = e.currentTarget
           void act(async () => {
-            const p = await api<Project>('/projects', 'POST', { name: f.get('name'), brief: f.get('brief'), budgetCap: Number(f.get('budgetCap')), brandName, brandKit })
+            // Va como formulario porque lleva las fotos de referencia: se guardan antes de que arranque el primer agente.
+            f.set('brandName', brandName); f.set('brandKit', brandKit)
+            const p = await upload<Project>('/projects', f)
             setProjects((ps) => [p, ...ps]); setPid(p.id); form.reset(); setBrandName(''); setBrandKit('')
             setBrands(await api<Brand[]>('/brands'))
           })
@@ -234,6 +236,12 @@ export function App() {
             <p className="note">Se guarda con el cliente y todos los agentes la reciben en sus próximos proyectos.</p>
             <BrandFiles brand={brandName.trim()} act={act} />
           </>}
+          <fieldset className="brand-files">
+            <legend>Imágenes de referencia</legend>
+            <label>Fotos (PNG o JPG, hasta 10 de 5 MB)<input name="references" type="file" multiple accept="image/png,image/jpeg" /></label>
+            <label>Qué deben tomar los agentes de estas fotos<input name="referenceNote" type="text" maxLength={500} placeholder="Por ejemplo: el estilo de luz, el tipo de cocina y la edad de la protagonista" /></label>
+            <p className="note">Todos los agentes las reciben desde Strategy, junto con esta indicación. Cuanto más concreta sea, menos rechazos y repeticiones. Podrás añadir más en cada aprobación.</p>
+          </fieldset>
           <label>Tope de presupuesto en dólares<input name="budgetCap" type="number" required min="1" step="1" defaultValue={50} /></label>
           <p className="note">El motor se detiene y te pregunta cuando el gasto alcanza este tope.</p>
           <div className="dialog-actions"><button type="button" onClick={() => newDialog.current?.close()}>Cancelar</button><button className="primary">Crear proyecto</button></div>
@@ -298,7 +306,7 @@ function BrandFiles({ brand, act }: { brand: string; act: (fn: () => Promise<unk
   return (
     <fieldset className="brand-files" disabled={sending}>
       <legend>Archivos reales de «{brand}»</legend>
-      <label>Logo<input type="file" accept="image/png,image/jpeg,image/svg+xml" onChange={(e) => send('logo', e.currentTarget)} /></label>
+      <label>Logos<input type="file" multiple accept="image/png,image/jpeg,image/svg+xml" onChange={(e) => send('logo', e.currentTarget)} /></label>
       <label>Fotos del producto<input type="file" multiple accept="image/png,image/jpeg" onChange={(e) => send('product', e.currentTarget)} /></label>
       <p className="saved" role="status">{sending ? 'Subiendo…' : done ? 'Archivo guardado.' : files.length ? `${files.length} archivo${files.length > 1 ? 's' : ''} guardado${files.length > 1 ? 's' : ''} de este cliente.` : 'Sin archivos todavía.'}</p>
       {files.length > 0 && <ul className="thumbs">{files.map((f) => (
@@ -309,14 +317,54 @@ function BrandFiles({ brand, act }: { brand: string; act: (fn: () => Promise<unk
   )
 }
 
+type Ref = { file: string; note: string; stage: string }
+
+/** Fotos de referencia que se adjuntan al revisar una etapa. Los agentes las reciben junto con la indicación. */
+function References({ pid, onAdded }: { pid: string; onAdded: (file: string) => void }) {
+  const [refs, setRefs] = useState<Ref[]>([])
+  const [note, setNote] = useState('')
+  const [state, setState] = useState('')
+  const path = `/projects/${pid}/references`
+  useEffect(() => { setRefs([]); setState(''); api<Ref[]>(path).then(setRefs).catch(() => {}) }, [path])
+  const send = async (input: HTMLInputElement) => {
+    const chosen = [...(input.files ?? [])]
+    if (!chosen.length) return
+    setState('Subiendo…')
+    try {
+      for (const file of chosen) {
+        const form = new FormData()
+        form.set('file', file); form.set('note', note)
+        const saved = await upload<Ref[]>(path, form)
+        setRefs(saved); onAdded(saved[saved.length - 1].file)
+      }
+      setState('Referencia guardada: los agentes la recibirán.'); setNote('')
+    } catch (err) {
+      setState(err instanceof Error ? err.message : 'No se pudo subir el archivo')
+    } finally { input.value = '' }
+  }
+  return (
+    <fieldset className="brand-files refs" disabled={state === 'Subiendo…'}>
+      <legend>Fotos de referencia para los agentes</legend>
+      <label>Qué deben tomar de la foto<input type="text" maxLength={500} placeholder="Por ejemplo: así debe verse la cocina del plano 2" value={note} onChange={(e) => setNote(e.target.value)} /></label>
+      <label>Fotos (PNG o JPG, hasta 5 MB)<input type="file" multiple accept="image/png,image/jpeg" onChange={(e) => void send(e.currentTarget)} /></label>
+      <p className="saved" role="status">{state || (refs.length ? `${refs.length} referencia${refs.length > 1 ? 's' : ''} en este proyecto.` : 'Escribe primero la indicación y luego elige la foto.')}</p>
+      {refs.length > 0 && <ul className="thumbs">{refs.map((r) => (
+        <li key={r.file}><Media path={`/projects/${pid}/files/${r.file}`} name={r.file} /><span>{r.note || r.file.split('/').pop()}</span></li>
+      ))}</ul>}
+    </fieldset>
+  )
+}
+
 function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onReplay }: { detail: Detail; scheme: SchemeT; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<boolean>; onSelect: (id: string) => void; onReplay: () => void }) {
   const [rejecting, setRejecting] = useState(false)
   const [comment, setComment] = useState('')
   const [agents, setAgents] = useState<string[]>([])
+  // Las referencias subidas en esta revisión: si se devuelve la etapa, se nombran en la indicación.
+  const [added, setAdded] = useState<string[]>([])
   const [cap, setCap] = useState(detail.budget_cap * 2)
   // Cada decisión tomada cierra el panel: dos aprobaciones seguidas de la misma etapa no comparten comentario ni marcas.
   const decisions = useMemo(() => events.filter((e) => e.type === 'gate.decided').length, [events])
-  useEffect(() => { setRejecting(false); setComment(''); setAgents([]); setCap(detail.budget_cap * 2) }, [detail.currentStage, detail.status, detail.budget_cap, decisions])
+  useEffect(() => { setRejecting(false); setComment(''); setAgents([]); setAdded([]); setCap(detail.budget_cap * 2) }, [detail.currentStage, detail.status, detail.budget_cap, decisions])
   // El servidor tarda en confirmar; mientras tanto los botones quedan bloqueados para no enviar dos veces.
   const [sending, setSending] = useState(false)
   const post = (path: string, body?: unknown) => { setSending(true); return postNow(path, body).finally(() => setSending(false)) }
@@ -342,6 +390,7 @@ function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onRe
             {stage.agents.map((a) => <button key={a.id} onClick={() => onSelect(a.id)}>{a.name.replace(/ Agents?$/, '')}</button>)}
             <button onClick={() => onSelect(stage.auditor.id)}>Qué dijo el auditor</button>
           </p>
+          <References pid={detail.id} onAdded={(f) => setAdded((xs) => [...xs, f])} />
           {rejecting && (
             <div className="reject">
               <label>Qué hay que corregir<textarea rows={3} value={comment} onChange={(e) => setComment(e.target.value)} /></label>
@@ -364,7 +413,7 @@ function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onRe
         </div>
         <div className="decision-actions">
           {rejecting
-            ? <><button onClick={() => setRejecting(false)}>Cancelar</button><button className="danger" disabled={sending || !comment.trim()} onClick={() => post('decision', { approve: false, comment, agents })}>Devolver etapa</button></>
+            ? <><button onClick={() => setRejecting(false)}>Cancelar</button><button className="danger" disabled={sending || !comment.trim()} onClick={() => post('decision', { approve: false, comment, agents, references: added })}>Devolver etapa</button></>
             : <><button onClick={() => setRejecting(true)}>Devolver con comentario</button><button className="primary" disabled={sending} onClick={() => post('decision', { approve: true })}>{sending ? 'Aprobando…' : escalated ? 'Aprobar de todos modos' : 'Aprobar etapa'}</button></>}
         </div>
       </div>

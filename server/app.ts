@@ -17,6 +17,16 @@ function imageExt(bytes: Uint8Array): '.png' | '.jpg' | '.svg' | null {
   if (/^\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*(<!DOCTYPE[^>]*>\s*)?<svg[\s>]/i.test(text) && !/<script|<foreignObject|\son\w+\s*=|javascript:/i.test(new TextDecoder().decode(bytes))) return '.svg'
   return null
 }
+const MAX_NEW_REFERENCES = 10
+/** Una foto de referencia subida por una persona: PNG o JPG, que es lo que leen los agentes y los modelos. */
+async function photo(file: unknown) {
+  if (!(file instanceof File)) throw new Error('Falta el archivo')
+  if (file.size > MAX_BRAND_FILE) throw new Error('Cada imagen puede pesar hasta 5 MB')
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  const ext = imageExt(bytes)
+  if (ext !== '.png' && ext !== '.jpg') throw new Error('La referencia debe ser una imagen PNG o JPG')
+  return { bytes, ext, contentType: CONTENT_TYPES[ext] }
+}
 const safePath = (path: string) => /^[\w.-]+(\/[\w.-]+)*$/.test(path) && !path.split('/').some((part) => part === '.' || part === '..')
 const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 /** El cuerpo de una petición como objeto, aunque llegue vacío o mal formado. */
@@ -137,8 +147,10 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
     if (ext === '.svg' && kind !== 'logo') throw new Error('Las fotos de producto deben ser PNG o JPG')
     // El nombre lo pone el servidor: `logo` o `producto-N`. Nunca el que trae el archivo.
     const taken = await brandFiles(name)
-    const last = Math.max(0, ...taken.map((f) => Number(/^producto-(\d+)\./.exec(f)?.[1] ?? 0)))
-    const filename = kind === 'logo' ? `logo${ext}` : `producto-${last + 1}${ext}`
+    // Un cliente puede tener varios logos (horizontal, isotipo, en negativo): el primero es `logo`, los demás `logo-N`.
+    const prefix = kind === 'logo' ? 'logo' : 'producto'
+    const last = Math.max(0, ...taken.map((f) => (new RegExp(`^${prefix}(-(\\d+))?\\.`).exec(f) ? Number(new RegExp(`^${prefix}-(\\d+)\\.`).exec(f)?.[1] ?? 1) : 0)))
+    const filename = kind === 'logo' && !last ? `logo${ext}` : `${prefix}-${last + 1}${ext}`
     const brand = await engine.addBrandAsset(name, filename, bytes, CONTENT_TYPES[ext])
     return c.json(brand!.assets.map((path) => path.split('/').pop()), 201)
   })
@@ -151,13 +163,20 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
   })
 
   app.get('/api/projects', async (c) => c.json(await engine.listProjects()))
-  app.post('/api/projects', async (c) => {
-    const body = await json(c)
+  // Con fotos de referencia llega como formulario; sin ellas, como JSON.
+  const manyBig = bodyLimit({ maxSize: MAX_NEW_REFERENCES * MAX_BRAND_FILE + 1024 * 1024, onError: (c) => c.json({ error: 'Las fotos de referencia pesan demasiado: hasta 10 imágenes de 5 MB' }, 413) })
+  app.post('/api/projects', manyBig, async (c) => {
+    const body: Record<string, any> = c.req.header('content-type')?.startsWith('multipart/') ? await c.req.parseBody({ all: true }) : await json(c)
+    // Un selector de archivos vacío llega como un archivo sin contenido.
+    const chosen = [body.references ?? []].flat().filter((f) => f instanceof File && f.size > 0)
+    if (chosen.length > MAX_NEW_REFERENCES) throw new Error(`Al crear el proyecto se pueden subir hasta ${MAX_NEW_REFERENCES} fotos de referencia; el resto se añade en las aprobaciones`)
+    const note = text(body.referenceNote, 500)
+    const references = await Promise.all(chosen.map(async (f) => ({ ...(await photo(f)), note })))
     const name = text(body.name, 80), brief = text(body.brief, 20_000), brandName = text(body.brandName, 80), budgetCap = Number(body.budgetCap)
     if (!name || !brief) throw new Error('El proyecto necesita nombre y brief')
     if (!(budgetCap > 0 && budgetCap <= 10_000)) throw new Error('El tope de presupuesto debe estar entre 1 y 10 000 dólares')
     const brand = brandName ? { name: brandName, kit: text(body.brandKit, 20_000) } : undefined
-    return c.json(await engine.createProject({ name, brief, budgetCap, brand }), 201)
+    return c.json(await engine.createProject({ name, brief, budgetCap, brand, references }), 201)
   })
   app.get('/api/projects/:id', async (c) => c.json(await engine.getProject(c.req.param('id'))))
 
@@ -168,10 +187,19 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
     return c.json({ events, project })
   })
 
+  // Fotos de referencia que la persona adjunta al revisar una etapa. Solo PNG o JPG: es lo que leen los agentes y los modelos.
+  app.get('/api/projects/:id/references', async (c) => c.json(await engine.listReferences(c.req.param('id'))))
+  app.post('/api/projects/:id/references', tooBig, async (c) => {
+    const { file, note } = await c.req.parseBody()
+    const { bytes, ext, contentType } = await photo(file)
+    return c.json(await engine.addReference(c.req.param('id'), bytes, ext, contentType, text(note, 500)), 201)
+  })
+
   const ok = { ok: true }
   app.post('/api/projects/:id/decision', async (c) => {
-    const { approve, comment, agents } = await json(c)
-    await engine.decide(c.req.param('id'), { approve: approve === true, comment: text(comment, 5000), agents: Array.isArray(agents) ? agents.filter((a) => typeof a === 'string') : undefined })
+    const { approve, comment, agents, references } = await json(c)
+    const strings = (v: unknown) => (Array.isArray(v) ? v.filter((a) => typeof a === 'string') : undefined)
+    await engine.decide(c.req.param('id'), { approve: approve === true, comment: text(comment, 5000), agents: strings(agents), references: strings(references) })
     return c.json(ok)
   })
   app.post('/api/projects/:id/pause', async (c) => (await engine.pause(c.req.param('id')), c.json(ok)))

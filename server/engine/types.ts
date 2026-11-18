@@ -57,6 +57,10 @@ export type Brand = { name: string; kit: string; assets: string[] }
  * Carpeta de una marca en Storage. La parte legible sale del nombre y el sufijo de su huella exacta,
  * para que dos clientes de nombre parecido ("Café" y "Cafe", "A&B" y "A B") nunca compartan archivos.
  */
+/** Foto de referencia que una persona sube al revisar una etapa, con la indicación que la acompaña. */
+export type Reference = { file: string; note: string; stage: string }
+export const readReferences = async (files: Files, projectId: string): Promise<Reference[]> => JSON.parse((await files.read(`${projectId}/referencias/notas.json`)) ?? '[]')
+
 export const brandDir = (name: string) => {
   const slug = name.toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'marca'
   return `brands/${slug}-${createHash('sha256').update(name).digest('hex').slice(0, 8)}`

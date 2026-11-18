@@ -1,3 +1,4 @@
+import { readReferences } from './types.ts'
 import { PGlite } from '@electric-sql/pglite'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
@@ -177,6 +178,32 @@ test('volver a una versión anterior la copia como versión nueva y el auditor r
   assert.match((await files.read(`${id}/strategy/story-architect/v3/script.md`))!, /Versión: 1/)
   assert.deepEqual([p.status, p.reason], ['waiting_human', 'gate'])
   assert.equal((await engine.eventsAfter(id)).filter((e) => e.type === 'audit.verdict').length, 3)
+})
+
+test('las fotos de referencia subidas en una aprobación quedan en el proyecto y se nombran al devolver', async () => {
+  const seen: (string | null)[] = []
+  const spy: Runner = { ...simRunner(), runAgent: (run) => (seen.push(run.feedback), simRunner().runAgent(run)) }
+  const { engine } = await setup(spy)
+  const id = await start(engine)
+  const refs = await engine.addReference(id, MEDIA, '.jpg', 'image/jpeg', 'Así debe verse la taza')
+  assert.deepEqual(refs, [{ file: 'referencias/ref-1.jpg', note: 'Así debe verse la taza', stage: engine.schemes.commercial.stages[0].name }])
+  assert.ok(await engine.files.readBytes(`${id}/referencias/ref-1.jpg`))
+  await engine.decide(id, { approve: false, comment: 'Usa la taza real', references: ['referencias/ref-1.jpg', 'otra/cosa.jpg'] })
+  await engine.advance(id)
+  const feedback = seen.filter(Boolean).pop()!
+  assert.match(feedback, /Usa la taza real\n.*referencias\/ref-1\.jpg$/)
+  assert.doesNotMatch(feedback, /otra\/cosa/)
+  assert.deepEqual(await engine.listReferences(id), refs)
+})
+
+test('las referencias subidas al crear el proyecto existen antes de que trabaje el primer agente', async () => {
+  const seen: number[] = []
+  const spy: Runner = { ...simRunner(), runAgent: async (run) => (seen.push((await readReferences(run.files, run.project.id)).length), simRunner().runAgent(run)) }
+  const { engine } = await setup(spy)
+  const { id } = await engine.createProject({ name: 'Con referencias', brief: 'x', budgetCap: 100, references: [1, 2].map(() => ({ bytes: MEDIA, ext: '.jpg', contentType: 'image/jpeg', note: 'El tono de luz' })) })
+  await engine.advance(id)
+  assert.equal(seen[0], 2)
+  assert.deepEqual((await engine.listReferences(id)).map((r) => [r.file, r.stage]), [['referencias/ref-1.jpg', ''], ['referencias/ref-2.jpg', '']])
 })
 
 test('la biblioteca de marca se guarda por cliente y llega a los agentes', async () => {

@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { plainReporter, type Reporter } from '../report.ts'
-import { brandDir, type AgentDef, type Asset, type Brand, type Db, type Ev, type Files, type Input, type NewAsset, type Project, type Runner, type Scheme, type StageDef } from './types.ts'
+import { brandDir, readReferences, type AgentDef, type Asset, type Brand, type Db, type Ev, type Files, type Input, type NewAsset, type Project, type Runner, type Scheme, type StageDef } from './types.ts'
 
 export type Settings = { humanReview: boolean; simulation: boolean }
 const DEFAULTS: Settings = { humanReview: true, simulation: true }
@@ -364,7 +364,23 @@ export function createEngine(opts: {
     return brandByName(name)
   }
 
-  async function createProject(input: { name: string; brief: string; budgetCap: number; scheme?: string; brand?: { name: string; kit: string } }) {
+  const listReferences = (id: string) => readReferences(files, id)
+
+  /** Guarda una foto de referencia del proyecto. El nombre lo pone el motor; la nota es la indicación de la persona. */
+  async function addReference(id: string, bytes: Uint8Array, ext: string, contentType: string, note: string, stage?: string) {
+    const p = await project(id)
+    if (['done', 'cancelled'].includes(p.status)) throw new Error('El proyecto ya terminó: no admite más referencias')
+    // ponytail: lista en un solo archivo, sin bloqueo; dos subidas simultáneas al mismo proyecto podrían pisarse. Pasar a una tabla si ocurre.
+    const refs = await listReferences(id)
+    if (refs.length >= 30) throw new Error('El proyecto ya tiene 30 fotos de referencia')
+    const file = `referencias/ref-${refs.length + 1}${ext}`
+    await files.writeBytes(`${id}/${file}`, bytes, contentType)
+    refs.push({ file, note, stage: stage ?? (await currentStage(id))?.name ?? '' })
+    await files.write(`${id}/referencias/notas.json`, JSON.stringify(refs))
+    return refs
+  }
+
+  async function createProject(input: { name: string; brief: string; budgetCap: number; scheme?: string; brand?: { name: string; kit: string }; references?: { bytes: Uint8Array; ext: string; contentType: string; note: string }[] }) {
     const scheme = input.scheme ?? 'commercial'
     if (!schemes[scheme]) throw new Error(`Esquema desconocido: ${scheme}`)
     // La biblioteca de marca se guarda por cliente y se reutiliza en sus siguientes proyectos.
@@ -373,13 +389,15 @@ export function createEngine(opts: {
     // El modo se fija al crear: cambiar el interruptor después no convierte un proyecto simulado en uno que gasta.
     const { simulation } = await getSettings()
     await db('INSERT INTO projects (id, name, brief, scheme, brand, status, budget_cap, created_at, simulation) VALUES (?,?,?,?,?,?,?,?,?)', id, input.name, input.brief, scheme, input.brand?.name ?? null, 'running', input.budgetCap, now(), simulation)
+    // Las referencias se guardan antes de arrancar: el primer agente de la primera etapa ya las recibe.
+    for (const r of input.references ?? []) await addReference(id, r.bytes, r.ext, r.contentType, r.note, '')
     await emit(id, 'project.status', { status: 'running', reason: null })
     kick(id)
     return project(id)
   }
 
   /** Decisión de una persona en un gate o tras una escalada del auditor. */
-  async function decide(id: string, d: { approve: boolean; comment?: string; agents?: string[] }) {
+  async function decide(id: string, d: { approve: boolean; comment?: string; agents?: string[]; references?: string[] }) {
     const [p, stage] = await Promise.all([project(id), currentStage(id)])
     if (p.status !== 'waiting_human' || !stage) throw new Error('El proyecto no está esperando una decisión')
     if (!d.approve && !d.comment?.trim()) throw new Error('Un rechazo necesita un comentario')
@@ -389,6 +407,10 @@ export function createEngine(opts: {
     const unknown = agents.filter((a) => !reachable.includes(a))
     if (!d.approve && unknown.length) throw new Error(`No se puede devolver trabajo a ${unknown.join(', ')}: no es de esta etapa ni de una anterior`)
     // Toma la decisión una sola vez: un doble clic o una cancelación simultánea no la repiten ni la pisan.
+    // Las fotos adjuntas a una devolución se nombran en la indicación, para que quien repite sepa cuáles mirar.
+    const known = d.references?.length ? (await listReferences(id)).map((r) => r.file) : []
+    const attached = (d.references ?? []).filter((f) => known.includes(f))
+    if (attached.length && d.comment) d = { ...d, comment: `${d.comment}\nFotos de referencia para esta corrección, míralas con view_media antes de empezar: ${attached.join(', ')}` }
     if (!(await move(id, 'waiting_human', 'running'))) throw new Error('El proyecto no está esperando una decisión')
     await emit(id, 'gate.decided', { stage: stage.id, approve: d.approve, comment: d.comment ?? null })
     if (d.approve) {
@@ -595,6 +617,7 @@ export function createEngine(opts: {
     // Carpetas de intentos que no llegaron a registrarse como paso, y la de la memoria para el cliente.
     for (const a of await db('SELECT DISTINCT path FROM assets WHERE project_id = ?', id)) dirs.add(`${id}/${a.path.split('/').slice(0, -1).join('/')}`)
     dirs.add(`${id}/client`)
+    dirs.add(`${id}/referencias`)
     for (const dir of dirs) await files.removeDir(dir)
     for (const table of ['shares', 'assets', 'events', 'steps', 'stages']) await db(`DELETE FROM ${table} WHERE project_id = ?`, id)
     await db('DELETE FROM projects WHERE id = ?', id)
@@ -668,7 +691,7 @@ export function createEngine(opts: {
     return { projectId: p.id, name: p.name, brand: p.brand, expiresAt: share.expires_at as string, report: await clientReport(p.id), videos: await clientVideos(p.id) }
   }
 
-  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
+  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listReferences, addReference, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
 }
 
 export type Engine = ReturnType<typeof createEngine>

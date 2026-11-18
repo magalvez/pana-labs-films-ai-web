@@ -147,6 +147,8 @@ audio.media { background: none; }
 .decision-media { flex: 1 1 100%; }
 .decision-media .media { max-width: 720px; margin: 0 auto 4px; }
 .brand-files { border: 2px solid var(--ink); padding: 8px 12px 4px; margin: 0 0 12px; display: grid; gap: 8px; }
+.brand-files.refs { margin: 12px 0 0; max-width: 70ch; }
+.brand-files.refs input[type=text] { width: 100%; }
 .brand-files legend { font-family: var(--pixel); padding: 0 6px; }
 .brand-files input[type=file] { font-family: var(--body); font-size: 14px; }
 
