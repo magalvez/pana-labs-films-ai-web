@@ -1,9 +1,12 @@
 import { DEFAULT_MODEL, MODELS, usdByKind, type Usage } from './models.ts'
-import { DEFAULT_IMAGE, DEFAULT_VIDEO, IMAGE_MODELS, VIDEO_MODELS } from '../media/prices.ts'
+import { DEFAULT_IMAGE, DEFAULT_VIDEO, IMAGE_MODELS, VIDEO_MODELS, imageModel } from '../media/prices.ts'
+import { ASPECTS, type Aspect, type Explorer } from '../explore.ts'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { plainReporter, type Reporter } from '../report.ts'
 import { brandDir, readReferences, type AgentDef, type Asset, type Brand, type Db, type Ev, type Files, type Input, type NewAsset, type Project, type Runner, type Scheme, type StageDef } from './types.ts'
 
+export type Board = { id: string; title: string; prompt: string; note: string; aspect: Aspect; withProduct: boolean; images: { file: string; selected: boolean }[] }
+export type Exploration = { idea: string; boards: Board[] }
 export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number; imageModel: string; videoModel: string }
 const DEFAULTS: Settings = { humanReview: true, simulation: true, models: {}, maxAuditRetries: 2, textTimeoutMin: 15, mediaTimeoutMin: 60, defaultBudget: 50, imageModel: DEFAULT_IMAGE, videoModel: DEFAULT_VIDEO }
 
@@ -41,6 +44,8 @@ export function createEngine(opts: {
   maxContractRetries?: number
   /** Quién escribe la memoria de producción para el cliente. Sin él, o en simulación, se usa una plantilla. */
   reporter?: Reporter
+  /** Quien propone y genera las opciones de la exploración. Sin él, los proyectos arrancan directo. */
+  explorer?: Explorer
 }) {
   const { db, files, schemes, runner } = opts
   // El proyecto tal como lo ve el agente que está corriendo: subir el tope a mitad de trabajo se refleja aquí.
@@ -401,7 +406,7 @@ export function createEngine(opts: {
     return refs
   }
 
-  async function createProject(input: { name: string; brief: string; budgetCap: number; scheme?: string; brand?: { name: string; kit: string }; references?: { bytes: Uint8Array; ext: string; contentType: string; note: string }[] }) {
+  async function createProject(input: { name: string; brief: string; budgetCap: number; explore?: boolean; scheme?: string; brand?: { name: string; kit: string }; references?: { bytes: Uint8Array; ext: string; contentType: string; note: string }[] }) {
     const scheme = input.scheme ?? 'commercial'
     if (!schemes[scheme]) throw new Error(`Esquema desconocido: ${scheme}`)
     // La biblioteca de marca se guarda por cliente y se reutiliza en sus siguientes proyectos.
@@ -412,6 +417,8 @@ export function createEngine(opts: {
     await db('INSERT INTO projects (id, name, brief, scheme, brand, status, budget_cap, created_at, simulation) VALUES (?,?,?,?,?,?,?,?,?)', id, input.name, input.brief, scheme, input.brand?.name ?? null, 'running', input.budgetCap, now(), simulation)
     // Las referencias se guardan antes de arrancar: el primer agente de la primera etapa ya las recibe.
     for (const r of input.references ?? []) await addReference(id, r.bytes, r.ext, r.contentType, r.note, '')
+    // Con exploración el proyecto espera: nada corre ni gasta hasta que una persona pulse "Iniciar producción".
+    if (input.explore && opts.explorer) { await setStatus(id, 'exploring'); return project(id) }
     await emit(id, 'project.status', { status: 'running', reason: null })
     kick(id)
     return project(id)
@@ -596,7 +603,7 @@ export function createEngine(opts: {
       if (e.type === 'cost') {
         let run = open.get(d.agent)
         // Un costo sin ejecución abierta es la memoria para el cliente u otro gasto fuera del recorrido.
-        if (!run) { run = { stage: d.stage, who: d.agent, name: names.get(d.agent) ?? 'Memoria para el cliente', kind: 'memoria', n: 1, usd: 0, repeat: false, startedAt: e.ts, endedAt: e.ts }; runs.push(run) }
+        if (!run) { run = { stage: d.stage, who: d.agent, name: names.get(d.agent) ?? (d.agent === 'exploration' ? 'Exploración de referencias' : 'Memoria para el cliente'), kind: 'memoria', n: 1, usd: 0, repeat: false, startedAt: e.ts, endedAt: e.ts }; runs.push(run) }
         run.usd += d.usd
         run.endedAt = e.ts
         if (d.tokens) {
@@ -650,6 +657,7 @@ export function createEngine(opts: {
     for (const a of await db('SELECT DISTINCT path FROM assets WHERE project_id = ?', id)) dirs.add(`${id}/${a.path.split('/').slice(0, -1).join('/')}`)
     dirs.add(`${id}/client`)
     dirs.add(`${id}/referencias`)
+    dirs.add(`${id}/${EXPLORE}`)
     for (const dir of dirs) await files.removeDir(dir)
     for (const table of ['shares', 'assets', 'events', 'steps', 'stages']) await db(`DELETE FROM ${table} WHERE project_id = ?`, id)
     await db('DELETE FROM projects WHERE id = ?', id)
@@ -693,6 +701,152 @@ export function createEngine(opts: {
     return markdown
   }
 
+  // ---------------------------------------------------------------- Exploración antes de producir
+
+  // ponytail: los tableros viven en un archivo del proyecto y los cambios van en fila dentro de este proceso.
+  // Con varios servidores a la vez haría falta una tabla con bloqueo.
+  const EXPLORE = 'exploracion'
+  const MAX_BOARDS = 8, MAX_PER_BOARD = 16
+  const lines = new Map<string, Promise<unknown>>()
+  const inLine = <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+    const next = (lines.get(id) ?? Promise.resolve()).catch(() => {}).then(fn)
+    lines.set(id, next)
+    return next
+  }
+  const readExploration = async (id: string): Promise<Exploration> => JSON.parse((await files.read(`${id}/${EXPLORE}/tableros.json`)) ?? '{"idea":"","boards":[]}')
+  const writeExploration = (id: string, x: Exploration) => files.write(`${id}/${EXPLORE}/tableros.json`, JSON.stringify(x))
+  const clean = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+  const aspectOf = (v: unknown): Aspect => ((ASPECTS as readonly string[]).includes(v as string) ? (v as Aspect) : '16:9')
+  async function exploring(id: string) {
+    const p = await project(id)
+    if (p.status !== 'exploring') throw new Error('Esta producción ya no está en exploración')
+    if (!opts.explorer) throw new Error('La exploración no está disponible en este servidor')
+    return { p, explorer: opts.explorer }
+  }
+
+  /** Lo que ve la sala de exploración: los tableros, lo que cuesta una imagen y si hay fotos reales del producto. */
+  async function getExploration(id: string) {
+    const [p, x, cfg] = await Promise.all([project(id), readExploration(id), getSettings()])
+    const brand = await brandOf(p)
+    return { ...x, usdPerImage: p.simulation ? 0 : imageModel(cfg.imageModel).usdPerImage, imageModel: imageModel(cfg.imageModel).name, productPhotos: productPhotos(brand).length }
+  }
+  const productPhotos = (brand: Brand | null) => (brand?.assets ?? []).filter((a) => /\/producto-\d+\.(png|jpg)$/.test(a)).slice(0, 6)
+
+  /** Claude lee el brief y propone la idea y los tableros. Los tableros que ya tienen imágenes se conservan. */
+  async function suggestExploration(id: string) {
+    const { p, explorer } = await exploring(id)
+    if (p.spent >= p.budget_cap) throw new Error('El proyecto ya alcanzó su tope de presupuesto')
+    const s = await explorer.suggest({ project: p, brand: await brandOf(p) })
+    await addCost(id, 'exploration', 'exploration', s.costUsd, s.use)
+    return inLine(id, async () => {
+      const x = await readExploration(id)
+      const kept = x.boards.filter((b) => b.images.length)
+      const fresh = s.boards.slice(0, MAX_BOARDS - kept.length).map((b) => ({ ...b, id: `t${randomBytes(4).toString('hex')}`, withProduct: false, images: [] }))
+      const next = { idea: x.idea || s.idea, boards: [...kept, ...fresh] }
+      await writeExploration(id, next)
+      return next
+    })
+  }
+
+  /** Guarda la idea y los textos de los tableros. Las imágenes de cada tablero las lleva el servidor, no el navegador. */
+  async function saveExploration(id: string, input: { idea?: unknown; boards?: unknown }) {
+    await exploring(id)
+    return inLine(id, async () => {
+      const x = await readExploration(id)
+      const list = Array.isArray(input.boards) ? input.boards.slice(0, MAX_BOARDS) : null
+      const boards = !list ? x.boards : list.map((b: any) => {
+        const old = x.boards.find((o) => o.id === b?.id)
+        return { id: old?.id ?? `t${randomBytes(4).toString('hex')}`, title: clean(b?.title, 60) || 'Tablero', prompt: clean(b?.prompt, 1500), note: clean(b?.note, 400), aspect: aspectOf(b?.aspect), withProduct: b?.withProduct === true, images: old?.images ?? [] }
+      })
+      const next = { idea: input.idea === undefined ? x.idea : clean(input.idea, 800), boards }
+      await writeExploration(id, next)
+      return next
+    })
+  }
+
+  /** Genera opciones para un tablero. Cada imagen queda con su procedencia y cuenta contra el tope del proyecto. */
+  async function generateExploration(id: string, boardId: string, count = 4) {
+    const { p, explorer } = await exploring(id)
+    const cfg = await getSettings()
+    const board = (await readExploration(id)).boards.find((b) => b.id === boardId)
+    if (!board) throw new Error('Ese tablero ya no existe')
+    if (board.prompt.length < 10) throw new Error('Describe con más detalle qué quieres ver en este tablero')
+    if (!(Number.isInteger(count) && count >= 1 && count <= 4)) throw new Error('Se generan de 1 a 4 opciones cada vez')
+    if (board.images.length + count > MAX_PER_BOARD) throw new Error(`Un tablero admite hasta ${MAX_PER_BOARD} imágenes. Crea otro tablero para seguir explorando.`)
+    const each = p.simulation ? 0 : imageModel(cfg.imageModel).usdPerImage
+    if (each * count > p.budget_cap - p.spent) throw new Error(`Falta presupuesto: generar ${count} imágenes cuesta $${(each * count).toFixed(2)} y al proyecto le quedan $${Math.max(p.budget_cap - p.spent, 0).toFixed(2)}. Sube el tope para seguir.`)
+    const photos = board.withProduct ? productPhotos(await brandOf(p)) : []
+    const referenceUrls = await Promise.all(photos.map((a) => files.url(a)))
+    const made = await Promise.allSettled(Array.from({ length: count }, () => explorer.image({ project: p, prompt: board.prompt, aspect: board.aspect, referenceUrls, model: cfg.imageModel })))
+    const ok = made.flatMap((m) => (m.status === 'fulfilled' ? [m.value] : []))
+    // Lo que sí se generó se paga y se guarda aunque otra opción haya fallado.
+    const next = await inLine(id, async () => {
+      const x = await readExploration(id)
+      const b = x.boards.find((o) => o.id === boardId)
+      for (const g of ok) {
+        const file = `${EXPLORE}/${boardId}-${randomBytes(4).toString('hex')}.jpg`
+        await files.writeBytes(`${id}/${file}`, g.bytes, 'image/jpeg')
+        await recordAsset(id, { path: file, kind: 'image', tool: 'generate_image', provider: g.provider, model: g.model, prompt: board.prompt, seed: g.seed, inputs: photos.map((a) => `brand/${a.split('/').pop()}`), costUsd: g.costUsd, license: g.license, measurements: null })
+        await addCost(id, 'exploration', 'exploration', g.costUsd)
+        b?.images.push({ file, selected: false })
+      }
+      if (b) await writeExploration(id, x)
+      return x
+    })
+    const failed = made.find((m) => m.status === 'rejected') as PromiseRejectedResult | undefined
+    if (!ok.length && failed) throw failed.reason instanceof Error ? failed.reason : new Error(String(failed.reason))
+    return { ...next, failed: count - ok.length }
+  }
+
+  async function selectExploration(id: string, file: string, selected: boolean) {
+    await exploring(id)
+    return inLine(id, async () => {
+      const x = await readExploration(id)
+      const image = x.boards.flatMap((b) => b.images).find((i) => i.file === file)
+      if (!image) throw new Error('Esa imagen ya no existe')
+      image.selected = selected
+      await writeExploration(id, x)
+      return x
+    })
+  }
+
+  /** Las imágenes elegidas pasan a ser referencias del proyecto, con la indicación de su tablero, y arranca la producción. */
+  async function startProduction(id: string) {
+    await exploring(id)
+    await inLine(id, async () => {
+      // El cambio de estado va primero: dos clics seguidos no arrancan ni copian dos veces.
+      if (!(await move(id, 'exploring', 'running'))) throw new Error('Esta producción ya no está en exploración')
+      try {
+        for (const b of (await readExploration(id)).boards) for (const i of b.images.filter((x) => x.selected)) {
+          const bytes = await files.readBytes(`${id}/${i.file}`)
+          if (bytes) await addReference(id, bytes, '.jpg', 'image/jpeg', `${b.title}. ${b.note}`.slice(0, 500), '')
+        }
+      } catch (err) {
+        await setStatus(id, 'exploring')
+        throw err
+      }
+    })
+    kick(id)
+  }
+
+  /** Lo elegido en la exploración, tal como lo ve el cliente: la idea y las imágenes por tablero. */
+  async function moodboard(id: string) {
+    const x = await readExploration(id)
+    const paths: string[] = []
+    const boards = x.boards.map((b) => ({ title: b.title, note: b.note, images: b.images.filter((i) => i.selected).map((i) => paths.push(i.file) - 1) })).filter((b) => b.images.length)
+    return { idea: x.idea, boards, paths }
+  }
+
+  /** Enlace de solo lectura al moodboard, para que el cliente apruebe el look antes de gastar en la producción. */
+  async function shareMoodboard(id: string, by: string, days = 14) {
+    const p = await project(id)
+    if (!(await moodboard(id)).paths.length) throw new Error('Elige al menos una imagen antes de crear el enlace para el cliente')
+    const token = randomBytes(24).toString('base64url')
+    const expires = new Date(Date.now() + days * 86_400_000).toISOString()
+    await db('INSERT INTO shares (token, project_id, created_by, created_at, expires_at) VALUES (?,?,?,?,?)', token, p.id, by, now(), expires)
+    return { token, expiresAt: expires }
+  }
+
   /** Enlace de solo lectura para un cliente. El secreto va en el enlace; no hay otra forma de llegar a la vista previa. */
   async function createShare(id: string, by: string, days = 14) {
     const p = await project(id)
@@ -720,10 +874,12 @@ export function createEngine(opts: {
     if (!share) return null
     if (count) await db('UPDATE shares SET views = views + 1 WHERE token = ?', token)
     const p = await project(share.project_id)
-    return { projectId: p.id, name: p.name, brand: p.brand, expiresAt: share.expires_at as string, report: await clientReport(p.id), videos: await clientVideos(p.id) }
+    const videos = await clientVideos(p.id)
+    // Sin pieza montada todavía, el enlace enseña el moodboard de la exploración y no hay memoria que escribir.
+    return { projectId: p.id, name: p.name, brand: p.brand, expiresAt: share.expires_at as string, report: videos.length ? await clientReport(p.id) : '', videos, moodboard: await moodboard(p.id) }
   }
 
-  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listReferences, addReference, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
+  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listReferences, addReference, getExploration, suggestExploration, saveExploration, generateExploration, selectExploration, startProduction, shareMoodboard, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
 }
 
 export type Engine = ReturnType<typeof createEngine>

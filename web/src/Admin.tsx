@@ -24,7 +24,7 @@ type Costs = {
 type Share = { token: string; createdBy: string; createdAt: string; expiresAt: string; revokedAt: string | null; views: number; active: boolean }
 type Act = (fn: () => Promise<unknown>) => Promise<boolean>
 
-const STATUS: Record<string, string> = { running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
+const STATUS: Record<string, string> = { exploring: 'Explorando', running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
 const SCHEMES: Record<string, string> = { commercial: 'Comercial publicitario' }
 const usd = (n: number) => `$${n.toFixed(2)}`
 const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : 0)

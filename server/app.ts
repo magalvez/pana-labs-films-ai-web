@@ -74,7 +74,14 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
   app.get('/api/public/:token', async (c) => {
     const share = await engine.openShare(c.req.param('token'), true)
     if (!share) return c.json(gone, 404)
-    return c.json({ name: share.name, brand: share.brand, expiresAt: share.expiresAt, report: share.report, videos: share.videos.map((v, i) => ({ index: i, label: v.label, seconds: v.seconds, width: v.width, height: v.height })) })
+    return c.json({ name: share.name, brand: share.brand, expiresAt: share.expiresAt, report: share.report, videos: share.videos.map((v, i) => ({ index: i, label: v.label, seconds: v.seconds, width: v.width, height: v.height })), moodboard: { idea: share.moodboard.idea, boards: share.moodboard.boards } })
+  })
+  app.get('/api/public/:token/image/:index', async (c) => {
+    const share = await engine.openShare(c.req.param('token'))
+    const path = share?.moodboard.paths[Number(c.req.param('index'))]
+    const bytes = path ? await engine.files.readBytes(`${share!.projectId}/${path}`) : null
+    if (!bytes) return c.json(gone, 404)
+    return c.body(bytes as Uint8Array<ArrayBuffer>, 200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
   })
   app.get('/api/public/:token/video/:index', async (c) => {
     const share = await engine.openShare(c.req.param('token'))
@@ -186,7 +193,7 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
     if (!name || !brief) throw new Error('El proyecto necesita nombre y brief')
     if (!(budgetCap > 0 && budgetCap <= 10_000)) throw new Error('El tope de presupuesto debe estar entre 1 y 10 000 dólares')
     const brand = brandName ? { name: brandName, kit: text(body.brandKit, 20_000) } : undefined
-    return c.json(await engine.createProject({ name, brief, budgetCap, brand, references }), 201)
+    return c.json(await engine.createProject({ name, brief, budgetCap, brand, references, explore: body.explore === true || body.explore === 'true' || body.explore === 'on' }), 201)
   })
   app.get('/api/projects/:id', async (c) => c.json(await engine.getProject(c.req.param('id'))))
 
@@ -206,6 +213,17 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
   })
 
   const ok = { ok: true }
+  // Exploración del look antes de producir: tableros, opciones generadas, selección y moodboard para el cliente.
+  app.get('/api/projects/:id/exploration', async (c) => c.json(await engine.getExploration(c.req.param('id'))))
+  app.put('/api/projects/:id/exploration', async (c) => c.json(await engine.saveExploration(c.req.param('id'), await json(c))))
+  app.post('/api/projects/:id/exploration/suggest', async (c) => c.json(await engine.suggestExploration(c.req.param('id'))))
+  app.post('/api/projects/:id/exploration/boards/:board/generate', async (c) => c.json(await engine.generateExploration(c.req.param('id'), c.req.param('board'), Number((await json(c)).count ?? 4))))
+  app.post('/api/projects/:id/exploration/select', async (c) => {
+    const { file, selected } = await json(c)
+    return c.json(await engine.selectExploration(c.req.param('id'), String(file), selected === true))
+  })
+  app.post('/api/projects/:id/exploration/share', async (c) => c.json(await engine.shareMoodboard(c.req.param('id'), c.get('email')), 201))
+  app.post('/api/projects/:id/start', async (c) => (await engine.startProduction(c.req.param('id')), c.json(ok)))
   app.post('/api/projects/:id/decision', async (c) => {
     const { approve, comment, agents, references } = await json(c)
     const strings = (v: unknown) => (Array.isArray(v) ? v.filter((a) => typeof a === 'string') : undefined)

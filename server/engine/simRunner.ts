@@ -12,7 +12,7 @@ const EXTRAS: Partial<Record<ToolFamily, string>> = { image: 'muestra.jpg', vide
 
 const cache = new Map<Asset['kind'], Promise<Uint8Array>>()
 /** Archivos de muestra hechos con ffmpeg en el servidor, una vez por proceso. No llaman a ningún proveedor. */
-function sampleMedia(kind: Asset['kind']): Promise<Uint8Array> {
+export function sampleMedia(kind: Asset['kind']): Promise<Uint8Array> {
   let bytes = cache.get(kind)
   if (!bytes) {
     bytes = (async () => {

@@ -262,3 +262,6 @@ button.quiet { border-color: transparent; text-decoration: underline; padding: 3
 .config .models tr.custom th { font-weight: 700; }
 .config .models .note { margin-top: 16px; }
 @media (max-width: 900px) { .config-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* En pantallas estrechas la navegación y los datos de la producción se pliegan en vez de desbordar. */
+@media (max-width: 640px) { .views, .readout { flex-wrap: wrap; } .readout { gap: 12px 20px; } }

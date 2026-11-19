@@ -12,6 +12,7 @@ import { pgDb } from '../store.ts'
 import { createEngine } from './pipeline.ts'
 import { simRunner as realSimRunner } from './simRunner.ts'
 import { createApp } from '../app.ts'
+import { parseSuggestion, simExplorer } from '../explore.ts'
 import { createUsers } from '../users.ts'
 import { brandDir, type Db, type Files, type Runner } from './types.ts'
 
@@ -52,7 +53,7 @@ const simRunner = (o: Parameters<typeof realSimRunner>[0] = {}) => realSimRunner
 async function setup(runner: Runner = simRunner(), shared?: { db: Db; files: Files }) {
   const db = shared?.db ?? (await makeDb())
   const files = shared?.files ?? memoryFiles()
-  return { engine: createEngine({ db, files, schemes: { commercial }, runner }), db, files }
+  return { engine: createEngine({ db, files, schemes: { commercial }, runner, explorer: simExplorer(async () => MEDIA) }), db, files }
 }
 async function start(engine: Awaited<ReturnType<typeof setup>>['engine'], budgetCap = 100) {
   const { id } = await engine.createProject({ name: 'Prueba', brief: 'Comercial de 15 s', budgetCap })
@@ -249,6 +250,53 @@ test('los tokens de cada respuesta quedan en el informe de costos, con el precio
   assert.equal(report.tokens.input, 1_000_000)
   assert.ok(Math.abs(report.tokensUsd.input - 0.5) < 1e-9)
   assert.deepEqual(report.byModel, [{ model: 'Haiku 5.5', usd: 0.5 }])
+})
+
+test('con exploración el proyecto espera, lo elegido se vuelve referencia y recién entonces arranca', async () => {
+  let ran = 0
+  const spy: Runner = { ...simRunner(), runAgent: (run) => (ran++, simRunner().runAgent(run)) }
+  const { engine } = await setup(spy)
+  const { id, status } = await engine.createProject({ name: 'Con exploración', brief: 'Comercial de 15 s', budgetCap: 100, explore: true })
+  await engine.advance(id)
+  assert.deepEqual([status, ran], ['exploring', 0], 'nada corre mientras se explora')
+  const proposed = await engine.suggestExploration(id)
+  assert.equal(proposed.boards.length, 3)
+  const board = proposed.boards[0]
+  await assert.rejects(engine.generateExploration(id, 'no-existe'), /ya no existe/)
+  await assert.rejects(engine.shareMoodboard(id, 'qa@example.com'), /Elige al menos una/)
+  const made = await engine.generateExploration(id, board.id, 4)
+  const images = made.boards[0].images
+  assert.equal(images.length, 4)
+  // Editar los textos no pierde las imágenes, y quitar un tablero sí lo quita.
+  const saved = await engine.saveExploration(id, { idea: 'Una mañana cualquiera', boards: [{ id: board.id, title: 'La protagonista', prompt: board.prompt, note: 'Misma persona en todos los planos', aspect: '3:4' }] })
+  assert.deepEqual([saved.boards.length, saved.boards[0].images.length, saved.boards[0].title], [1, 4, 'La protagonista'])
+  await engine.selectExploration(id, images[1].file, true)
+  const { token } = await engine.shareMoodboard(id, 'qa@example.com')
+  const share = await engine.openShare(token)
+  assert.deepEqual([share!.moodboard.idea, share!.moodboard.paths, share!.report, share!.videos.length], ['Una mañana cualquiera', [images[1].file], '', 0])
+  await engine.startProduction(id)
+  await assert.rejects(engine.startProduction(id), /ya no está en exploración/)
+  await assert.rejects(engine.generateExploration(id, board.id), /ya no está en exploración/)
+  await engine.advance(id)
+  assert.ok(ran > 0, 'al iniciar, los agentes trabajan')
+  assert.deepEqual(await engine.listReferences(id), [{ file: 'referencias/ref-1.jpg', note: 'La protagonista. Misma persona en todos los planos', stage: '' }])
+  assert.equal((await engine.listAssets(id)).filter((a) => a.path.startsWith('exploracion/')).length, 4, 'cada opción generada queda con su procedencia')
+})
+
+test('la exploración no gasta por encima del tope y la propuesta del modelo se valida', async () => {
+  const paid = simExplorer(async () => MEDIA)
+  const db = await makeDb(), files = memoryFiles()
+  const engine = createEngine({ db, files, schemes: { commercial }, runner: simRunner(), explorer: { ...paid, image: async (o) => ({ ...(await paid.image(o)), costUsd: 0.08 }) } })
+  await engine.setSettings({ simulation: false })
+  const { id } = await engine.createProject({ name: 'Justo', brief: 'x', budgetCap: 1, explore: true })
+  const { boards } = await engine.suggestExploration(id)
+  await engine.generateExploration(id, boards[0].id, 4)
+  await engine.generateExploration(id, boards[0].id, 4)
+  await engine.generateExploration(id, boards[0].id, 4)
+  await assert.rejects(engine.generateExploration(id, boards[0].id, 4), /Falta presupuesto/)
+  assert.ok(Math.abs((await engine.getProject(id)).spent - 0.96) < 1e-9)
+  assert.deepEqual(parseSuggestion('Claro:\n{"idea":"i","boards":[{"title":"Look","prompt":"a warm kitchen at dawn","aspect":"2:1"},{"title":"","prompt":"x"}]}').boards, [{ title: 'Look', prompt: 'a warm kitchen at dawn', note: '', aspect: '16:9' }])
+  assert.throws(() => parseSuggestion('no hay json'), /No se pudo armar/)
 })
 
 test('la biblioteca de marca se guarda por cliente y llega a los agentes', async () => {

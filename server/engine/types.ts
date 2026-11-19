@@ -20,7 +20,8 @@ export type Project = {
   name: string
   brief: string
   scheme: string
-  status: 'running' | 'paused' | 'waiting_human' | 'done' | 'failed' | 'cancelled'
+  /** `exploring`: creado pero sin arrancar, mientras una persona explora el look y elige referencias. */
+  status: 'exploring' | 'running' | 'paused' | 'waiting_human' | 'done' | 'failed' | 'cancelled'
   reason: string | null
   budget_cap: number
   spent: number

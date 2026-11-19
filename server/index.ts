@@ -9,6 +9,7 @@ import { simRunner } from './engine/simRunner.ts'
 import { supabaseFiles } from './files.ts'
 import { commercial } from './schemes/commercial.ts'
 import { claudeReporter } from './report.ts'
+import { claudeExplorer, simExplorer } from './explore.ts'
 import { supabaseDb } from './store.ts'
 import { createUsers, type Role } from './users.ts'
 
@@ -29,6 +30,7 @@ const allowed = env.ALLOWED_EMAILS.split(',').map((e) => e.trim().toLowerCase())
 const sessions = new Map<string, { email: string; role: Role; until: number }>()
 
 const sim = simRunner({ delayMs: Number(env.SIM_DELAY_MS ?? 1500), rejectOnce: ['production'] })
+const explorers = { sim: simExplorer(), real: claudeExplorer() }
 const real = claudeRunner({ agentsDir: join(import.meta.dirname, 'agents') })
 const db = supabaseDb(env.DATABASE_URL)
 const engine: Engine = createEngine({
@@ -36,6 +38,10 @@ const engine: Engine = createEngine({
   files: supabaseFiles(supabase),
   schemes: { commercial },
   reporter: claudeReporter(),
+  explorer: {
+    suggest: (i) => (i.project.simulation ? explorers.sim : explorers.real).suggest(i),
+    image: (o) => (o.project.simulation ? explorers.sim : explorers.real).image(o),
+  },
   // Cada proyecto usa el modo con el que se creó; el interruptor del panel solo decide el de los nuevos.
   runner: {
     runAgent: (run) => (run.project.simulation ? sim : real).runAgent(run),

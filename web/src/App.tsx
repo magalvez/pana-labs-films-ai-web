@@ -2,13 +2,14 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Admin } from './Admin'
 import { Config, type Settings } from './Config'
+import { Explore } from './Explore'
 import { api, openFile, setOnExpired, setToken, upload } from './api'
 import { Media, mediaKind } from './media'
 import { Team } from './Team'
 import { Office } from './office/Office'
 import type { Ev, SchemeT, StageT } from './office/world'
 
-type Project = { id: string; name: string; brief: string; scheme: string; status: string; reason: string | null; budget_cap: number; spent: number; simulation: boolean }
+type Project = { id: string; name: string; brand: string | null; brief: string; scheme: string; status: string; reason: string | null; budget_cap: number; spent: number; simulation: boolean }
 type Step = { stage: string; agent: string; version: number; status: string; feedback: string | null; model: string | null }
 type Brand = { name: string; kit: string }
 type Config = { supabaseUrl: string; supabaseAnonKey: string }
@@ -24,7 +25,7 @@ function masterPath(events: Ev[]): string | null {
 type View = 'studio' | 'producciones' | 'equipo' | 'configuracion'
 const viewOf = (hash: string): View => (hash === '#/producciones' ? 'producciones' : hash === '#/equipo' ? 'equipo' : hash === '#/configuracion' ? 'configuracion' : 'studio')
 
-const STATUS: Record<string, string> = { running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera tu decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
+const STATUS: Record<string, string> = { exploring: 'Explorando el look', running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera tu decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
 const usd = (n: number) => `$${n.toFixed(2)}`
 const hour = (ts: string) => new Date(ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
@@ -195,7 +196,8 @@ export function App() {
       {screen === 'producciones' && <Admin act={act} onOpen={(id) => { setPid(id); go('studio') }} />}
       {screen === 'equipo' && me && <Team me={me.email} act={act} />}
       {screen === 'configuracion' && settings && <Config settings={settings} schemes={schemes} act={act} onChange={setSettings} />}
-      <main hidden={screen !== 'studio'}>
+      {screen === 'studio' && detail?.status === 'exploring' && <Explore project={detail} act={act} onChanged={() => pollNow.current()} onRaise={() => budgetDialog.current?.showModal()} />}
+      <main hidden={screen !== 'studio' || detail?.status === 'exploring'}>
         <section className="stage-floor">
           <Office key={pid ?? 'empty'} scheme={scheme} events={events} replay={replay} selected={selected} onSelect={setSelected} onReplayEnd={endReplay} />
           {!projects.length && (
@@ -244,6 +246,8 @@ export function App() {
           </fieldset>
           <label>Tope de presupuesto en dólares<input name="budgetCap" type="number" required min="1" step="1" key={settings?.defaultBudget} defaultValue={settings?.defaultBudget ?? 50} /></label>
           <p className="note">El motor se detiene y te pregunta cuando el gasto alcanza este tope.</p>
+          <label className="check"><input name="explore" type="checkbox" defaultChecked />
+            <span><strong>Explorar el look antes de producir</strong>El proyecto abre en la sala de exploración: generas opciones de protagonista, locación y look, eliges las referencias y puedes enseñarle el moodboard al cliente. Nada más corre ni gasta hasta que pulses «Iniciar producción». Sin marcar, arranca directo.</span></label>
           <div className="dialog-actions"><button type="button" onClick={() => newDialog.current?.close()}>Cancelar</button><button className="primary">Crear proyecto</button></div>
         </form>
       </dialog>
