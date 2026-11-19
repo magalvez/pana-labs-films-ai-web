@@ -3,7 +3,7 @@ import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { PRICE_LIST } from '../media/prices.ts'
+import { priceList } from '../media/prices.ts'
 import { announce, kindOf, mediaTools } from './tools.ts'
 import type { AgentRun, AuditRun, Brand, Files, Input, Runner, Verdict } from './types.ts'
 import { readReferences } from './types.ts'
@@ -116,7 +116,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
   }
 
   return {
-    async runAgent({ project, stage, agent, version, dir, files, brand, inputs, feedback, to, say, spend, record, assets, signal, model: chosen, timeoutMs }: AgentRun) {
+    async runAgent({ project, stage, agent, version, dir, files, brand, inputs, feedback, to, say, spend, record, assets, signal, model: chosen, timeoutMs, media: generation }: AgentRun) {
       const model = pick(chosen)
       const written = new Set<string>()
       // Lo que el agente escribió o generó en esta ejecución, sin contar lo que heredó de la versión anterior.
@@ -125,6 +125,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       let used = 0
       const stop: Stop = { controller: new AbortController() }
       const media = mediaTools({
+        imageModel: generation?.image, videoModel: generation?.video,
         projectId: project.id, dir, families: agent.tools ?? [], files, brand, brandName: brand?.name ?? project.name, record, assets,
         budgetLeft: () => project.budget_cap - project.spent - used,
         spend: async (usd) => { used += usd; await spend(usd) },
@@ -151,7 +152,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       for (const f of carried) written.add(f)
       const kept = carried.length ? `\nEn tu carpeta ${rel}/ ya están estos archivos de tu trabajo anterior: ${carried.join(', ')}. Revísalos antes de generar nada: rehaz solo lo que haga falta y reescribe los entregables que cambien. Lo demás se conserva tal cual y no se vuelve a pagar.` : ''
       const redo = feedback ? `\n\nTu entrega anterior fue devuelta. Corrige esto: ${feedback}${kept}` : carried.length ? `\n\nUn intento anterior de este trabajo se interrumpió antes de terminar.${kept}` : ''
-      const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}${await refNote(files, project.id)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}.\n${PRICE_LIST}\n\nEntregables previos disponibles:\n${await describe(files, project.id, inputs)}\n\nTu carpeta de trabajo es ${rel}/. Tus entregables: ${agent.deliverables.join(', ')}.${redo}`
+      const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}${await refNote(files, project.id)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}.\n${priceList(generation?.image, generation?.video)}\n\nEntregables previos disponibles:\n${await describe(files, project.id, inputs)}\n\nTu carpeta de trabajo es ${rel}/. Tus entregables: ${agent.deliverables.join(', ')}.${redo}`
       const { text } = await loop(system, prompt, [readTool(files, project.id), writeTool, ...media], say, limit(Boolean(agent.tools?.length), timeoutMs), stop, signal, async (usd, use) => { used += usd; await spend(usd, use) }, model)
       // El resumen del traspaso lo escribe el motor a partir de la respuesta final del agente.
       await files.write(`${dir}/handoff.json`, JSON.stringify({ agent: agent.id, stage: stage.id, version, to, summary: text || `${agent.name} entregó sin resumen.`, files: [...written], changed: [...changed] }, null, 2))

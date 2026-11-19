@@ -1,10 +1,11 @@
 import { DEFAULT_MODEL, MODELS, usdByKind, type Usage } from './models.ts'
+import { DEFAULT_IMAGE, DEFAULT_VIDEO, IMAGE_MODELS, VIDEO_MODELS } from '../media/prices.ts'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { plainReporter, type Reporter } from '../report.ts'
 import { brandDir, readReferences, type AgentDef, type Asset, type Brand, type Db, type Ev, type Files, type Input, type NewAsset, type Project, type Runner, type Scheme, type StageDef } from './types.ts'
 
-export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number }
-const DEFAULTS: Settings = { humanReview: true, simulation: true, models: {}, maxAuditRetries: 2, textTimeoutMin: 15, mediaTimeoutMin: 60, defaultBudget: 50 }
+export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number; imageModel: string; videoModel: string }
+const DEFAULTS: Settings = { humanReview: true, simulation: true, models: {}, maxAuditRetries: 2, textTimeoutMin: 15, mediaTimeoutMin: 60, defaultBudget: 50, imageModel: DEFAULT_IMAGE, videoModel: DEFAULT_VIDEO }
 
 type StepRow = { stage: string; agent: string; version: number; status: 'done' | 'rejected'; feedback: string | null; model: string | null }
 type StageRow = { stage: string; status: 'working' | 'audited' | 'escalated' | 'approved'; attempts: number }
@@ -84,6 +85,7 @@ export function createEngine(opts: {
       humanReview: flag, simulation: flag,
       models: (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v) && Object.entries(v as object).every(([agent, model]) => known.has(agent) && (model === null || (typeof model === 'string' && Object.hasOwn(MODELS, model)))),
       maxAuditRetries: whole(0, 5), textTimeoutMin: whole(5, 60), mediaTimeoutMin: whole(15, 180), defaultBudget: whole(1, 10_000),
+      imageModel: (v) => typeof v === 'string' && Object.hasOwn(IMAGE_MODELS, v), videoModel: (v) => typeof v === 'string' && Object.hasOwn(VIDEO_MODELS, v),
     }
     // Primero se valida todo: un valor malo no deja guardado a medias lo demás.
     const keys = (Object.keys(DEFAULTS) as (keyof Settings)[]).filter((k) => patch[k] !== undefined)
@@ -240,6 +242,7 @@ export function createEngine(opts: {
       const cfg = await getSettings()
       const result = await runner.runAgent({
         project: fresh, stage, agent, version, dir, to, files, brand,
+        media: { image: cfg.imageModel, video: cfg.videoModel },
         model: cfg.models[agent.id], timeoutMs: (agent.tools?.length ? cfg.mediaTimeoutMin : cfg.textTimeoutMin) * 60_000,
         inputs: inputsFor(p.id, latest, scheme, stage, agent),
         feedback,

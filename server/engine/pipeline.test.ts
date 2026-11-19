@@ -1,3 +1,4 @@
+import { priceList } from '../media/prices.ts'
 import { usdOf } from './models.ts'
 import { readReferences } from './types.ts'
 import { PGlite } from '@electric-sql/pglite'
@@ -209,15 +210,21 @@ test('las referencias subidas al crear el proyecto existen antes de que trabaje 
 
 test('la configuración elige el modelo de cada agente y rechaza valores que no existen', async () => {
   const seen = new Map<string, string | undefined>()
-  const spy: Runner = { ...simRunner(), runAgent: (run) => (seen.set(run.agent.id, run.model), simRunner().runAgent(run)) }
+  let video: string | undefined
+  const spy: Runner = { ...simRunner(), runAgent: (run) => (seen.set(run.agent.id, run.model), (video = run.media?.video), simRunner().runAgent(run)) }
   const { engine } = await setup(spy)
   await engine.setSettings({ models: { 'brand-market-research': 'claude-haiku-5-5' }, textTimeoutMin: 20 })
   await assert.rejects(engine.setSettings({ models: { 'brand-market-research': 'gpt-x' } }), /no sirve/)
   await assert.rejects(engine.setSettings({ models: { 'nadie': 'claude-haiku-5-5' } }), /no sirve/)
   await assert.rejects(engine.setSettings({ maxAuditRetries: 9 }), /no sirve/)
+  await assert.rejects(engine.setSettings({ videoModel: 'sora' }), /no sirve/)
+  await engine.setSettings({ videoModel: 'kling-3-standard' })
+  assert.match(priceList(undefined, 'kling-3-standard'), /kling-video\/v3\/standard\/image-to-video, sin audio\): 0\.084/)
+  assert.match(priceList(), /nano-banana-2\): 0\.08 .*\n.*\n.*kling-video\/v2\.6\/pro/)
   await start(engine)
   assert.equal(seen.get('brand-market-research'), 'claude-haiku-5-5')
   assert.equal(seen.get('brief-strategy'), undefined)
+  assert.equal(video, 'kling-3-standard')
   assert.equal((await engine.getSettings()).textTimeoutMin, 20)
   // Un valor malo no deja guardado a medias lo demás del mismo cambio.
   await assert.rejects(engine.setSettings({ simulation: false, maxAuditRetries: 9 }), /no sirve/)

@@ -6,6 +6,7 @@ import type { Role, Users } from './users.ts'
 import { CONTENT_TYPES } from './engine/tools.ts'
 import { brandDir } from './engine/types.ts'
 import { DEFAULT_MODEL, MODELS, RECOMMENDED } from './engine/models.ts'
+import { IMAGE_MODELS, VIDEO_MODELS } from './media/prices.ts'
 
 // Lo que el cliente puede subir a su biblioteca de marca. El SVG solo sirve como logo: los modelos no lo leen como referencia.
 const MAX_BRAND_FILE = 5 * 1024 * 1024
@@ -134,7 +135,10 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
     if (c.get('role') !== 'admin') return c.json({ error: 'Solo un administrador puede cambiar la configuración' }, 403)
     return c.json(await engine.setSettings(await json(c)))
   })
-  app.get('/api/models', (c) => c.json({ models: Object.entries(MODELS).map(([id, m]) => ({ id, name: m.name, note: m.note })), default: DEFAULT_MODEL, recommended: RECOMMENDED }))
+  app.get('/api/models', (c) => c.json({ models: Object.entries(MODELS).map(([id, m]) => ({ id, name: m.name, note: m.note })), default: DEFAULT_MODEL, recommended: RECOMMENDED,
+    image: Object.entries(IMAGE_MODELS).map(([id, m]) => ({ id, name: m.name, note: m.note, price: `$${m.usdPerImage.toFixed(2)} por imagen` })),
+    video: Object.entries(VIDEO_MODELS).map(([id, m]) => ({ id, name: m.name, note: m.note, price: `$${m.usdPerSecond.toFixed(3)} por segundo, $${(m.usdPerSecond * 5).toFixed(2)} un clip de 5 s` })),
+  }))
   app.get('/api/brands', async (c) => c.json(await engine.listBrands()))
 
   const brandFiles = async (name: string) => ((await engine.brandByName(name))?.assets ?? []).map((path) => path.split('/').pop()!)

@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises'
-import { MODELS } from './prices.ts'
+import { MODELS, imageModel, videoModel } from './prices.ts'
 
 const key = () => {
   if (!process.env.FAL_KEY) throw new Error('Falta FAL_KEY en el archivo .env: sin ella no se puede generar imagen ni video.')
@@ -71,16 +71,17 @@ const download = (url: string) => retry(async () => {
 export type Generated = { bytes: Uint8Array; contentType: string; model: string; costUsd: number; seed: string | null }
 
 /** Con imágenes de referencia el modelo las usa para mantener personaje, locación o producto. */
-export async function generateImage(o: { prompt: string; aspect: string; referenceUrls: string[] }): Promise<Generated> {
-  const endpoint = o.referenceUrls.length ? MODELS.image.editEndpoint : MODELS.image.endpoint
+export async function generateImage(o: { prompt: string; aspect: string; referenceUrls: string[]; model?: string }): Promise<Generated> {
+  const m = imageModel(o.model)
+  const endpoint = o.referenceUrls.length ? m.editEndpoint : m.endpoint
   const out = await fal(endpoint, { prompt: o.prompt, aspect_ratio: o.aspect, num_images: 1, output_format: 'jpeg', ...(o.referenceUrls.length ? { image_urls: o.referenceUrls } : {}) }, 5 * 60_000)
   const image = out.images?.[0]
   if (!image?.url) throw new Error(`fal.ai no devolvió imagen: ${String(out.description ?? '').slice(0, 200) || 'respuesta vacía'}`)
-  return { bytes: await download(image.url), contentType: 'image/jpeg', model: endpoint, costUsd: MODELS.image.usdPerImage, seed: out.seed == null ? null : String(out.seed) }
+  return { bytes: await download(image.url), contentType: 'image/jpeg', model: endpoint, costUsd: m.usdPerImage, seed: out.seed == null ? null : String(out.seed) }
 }
 
-export async function generateVideo(o: { prompt: string; imageUrl: string; durationSeconds: number; quality: 'draft' | 'final'; negativePrompt?: string }): Promise<Generated> {
-  const m = MODELS.video[o.quality]
+export async function generateVideo(o: { prompt: string; imageUrl: string; durationSeconds: number; quality: 'draft' | 'final'; negativePrompt?: string; model?: string }): Promise<Generated> {
+  const m = o.quality === 'final' ? videoModel(o.model) : MODELS.draft
   const input = o.quality === 'final'
     ? { prompt: o.prompt, start_image_url: o.imageUrl, duration: String(o.durationSeconds), generate_audio: false, ...(o.negativePrompt ? { negative_prompt: o.negativePrompt } : {}) }
     : { prompt: o.prompt, image_url: o.imageUrl, duration: o.durationSeconds, resolution: '360p', ...(o.negativePrompt ? { negative_prompt: o.negativePrompt } : {}) }

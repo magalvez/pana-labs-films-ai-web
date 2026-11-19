@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 import { api } from './api'
 import type { SchemeT } from './office/world'
 
-export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number }
-type Models = { models: { id: string; name: string; note: string }[]; default: string; recommended: Record<string, string> }
+export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number; imageModel: string; videoModel: string }
+type Gen = { id: string; name: string; note: string; price: string }
+type Models = { image: Gen[]; video: Gen[]; models: { id: string; name: string; note: string }[]; default: string; recommended: Record<string, string> }
 type Act = (fn: () => Promise<unknown>) => Promise<boolean>
 
 /** Un número que se guarda al salir del campo, no en cada tecla. */
@@ -49,6 +50,17 @@ export function Config({ settings, schemes, act, onChange }: { settings: Setting
           <Limit label="Tiempo máximo de un agente de texto" hint="Pasado este tiempo el agente se detiene y la producción queda lista para reintentar." value={settings.textTimeoutMin} min={5} max={60} unit="min" onSave={(n) => save({ textTimeoutMin: n })} />
           <Limit label="Tiempo máximo de un agente que genera o monta" hint="Incluye a los auditores. Cada toma de video tarda varios minutos." value={settings.mediaTimeoutMin} min={15} max={180} unit="min" onSave={(n) => save({ mediaTimeoutMin: n })} />
           <Limit label="Tope de presupuesto de un proyecto nuevo" hint="El valor que aparece al crear un proyecto. Se puede cambiar en cada uno." value={settings.defaultBudget} min={1} max={10000} unit="USD" onSave={(n) => save({ defaultBudget: n })} />
+        </section>
+
+        <section className="credits models" aria-label="Modelos de generación">
+          <h3>Modelos de generación</h3>
+          {catalog && ([['imageModel', 'Imágenes: personajes, locaciones y storyboard', catalog.image], ['videoModel', 'Toma final de video', catalog.video]] as const).map(([key, label, options]) => (
+            <label key={key} className="limit">
+              <span><strong>{label}</strong>{options.map((o) => `${o.name}: ${o.price}. ${o.note}`).join(' ')}</span>
+              <select value={settings[key]} onChange={(e) => save({ [key]: e.target.value })}>{options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}</select>
+            </label>
+          ))}
+          <p className="note">Todo se genera en fal.ai con la misma clave. El cambio vale para la siguiente imagen o toma, también en producciones en curso: conviene no mezclar modelos de video dentro de un mismo comercial.</p>
         </section>
 
         <section className="credits models" aria-label="Modelo de cada agente">

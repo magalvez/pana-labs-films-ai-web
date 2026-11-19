@@ -96,6 +96,8 @@ export type AgentRun = {
   model?: string
   /** Tiempo máximo de la ejecución, de la configuración. */
   timeoutMs?: number
+  /** Modelos de imagen y de video final elegidos en la configuración. */
+  media?: { image?: string; video?: string }
   stage: StageDef
   agent: AgentDef
   version: number

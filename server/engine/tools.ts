@@ -7,7 +7,7 @@ import * as eleven from '../media/eleven.ts'
 import * as fal from '../media/fal.ts'
 import { MAX_REVIEW_BYTES, reviewAvailable, reviewEstimateUsd, reviewVideo } from '../media/gemini.ts'
 import * as ff from '../media/ffmpeg.ts'
-import { MODELS } from '../media/prices.ts'
+import { MODELS, imageModel, videoModel } from '../media/prices.ts'
 import { renderEndCard, renderSuper } from '../media/remotion.ts'
 import { brandDir, type Asset, type Brand, type Files, type Measurements, type NewAsset, type ToolFamily } from './types.ts'
 
@@ -21,6 +21,9 @@ export const kindOf = (name: string): Asset['kind'] | undefined => KIND[extname(
 
 export type ToolContext = {
   projectId: string
+  /** Modelos de generación elegidos en la configuración. Sin ellos, los de por defecto. */
+  imageModel?: string
+  videoModel?: string
   /** Carpeta donde el agente guarda lo que produce. Un auditor no tiene: solo mira. */
   dir: string | null
   families: ToolFamily[]
@@ -197,7 +200,7 @@ export function mediaTools(ctx: ToolContext) {
 
   if (has('provenance') || !ctx.dir) tools.push(tool('list_provenance', 'Lista todos los archivos generados o montados en el proyecto, con herramienta, modelo, prompt, licencia, costo y medidas técnicas.', z.object({}), async () => JSON.stringify(await ctx.assets(), null, 1)))
 
-  if (has('image')) tools.push(tool('generate_image', `Genera una imagen (${MODELS.image.usdPerImage} USD). Con \`reference_files\` el modelo conserva lo que muestran: úsalo para mantener un personaje, una locación o el producto real del cliente. Nunca pidas dibujar el logo ni texto de marca.`, z.object({
+  if (has('image')) tools.push(tool('generate_image', `Genera una imagen (${imageModel(ctx.imageModel).usdPerImage} USD). Con \`reference_files\` el modelo conserva lo que muestran: úsalo para mantener un personaje, una locación o el producto real del cliente. Nunca pidas dibujar el logo ni texto de marca.`, z.object({
     prompt: z.string().min(10),
     filename: z.string().describe('Nombre de salida terminado en .jpg, por ejemplo S01.jpg.'),
     aspect: z.enum(['16:9', '9:16', '1:1', '4:3', '3:4']).default('16:9'),
@@ -205,10 +208,10 @@ export function mediaTools(ctx: ToolContext) {
   }), async (input, tmp) => {
     const name = output(input.filename, '.jpg')
     const referenceUrls = await Promise.all(input.reference_files.map((p) => ctx.files.url(resolve(p))))
-    return paid(MODELS.image.usdPerImage, tmp, name, () => fal.generateImage({ prompt: input.prompt, aspect: input.aspect, referenceUrls }), { tool: 'generate_image', provider: 'fal.ai', prompt: input.prompt, inputs: input.reference_files, license: FAL_LICENSE })
+    return paid(imageModel(ctx.imageModel).usdPerImage, tmp, name, () => fal.generateImage({ prompt: input.prompt, aspect: input.aspect, referenceUrls, model: ctx.imageModel }), { tool: 'generate_image', provider: 'fal.ai', prompt: input.prompt, inputs: input.reference_files, license: FAL_LICENSE })
   }))
 
-  if (has('video')) tools.push(tool('generate_video', `Anima una imagen de partida y produce un clip sin audio. \`final\` es la toma que va al comercial (${MODELS.video.final.usdPerSecond} USD por segundo, 5 o 10 s). \`draft\` es una prueba en baja resolución (${MODELS.video.draft.usdPerSecond} USD por segundo, 5, 8 o 10 s) para comprobar un movimiento arriesgado antes de pagar la final. El encuadre lo define la imagen de partida.`, z.object({
+  if (has('video')) tools.push(tool('generate_video', `Anima una imagen de partida y produce un clip sin audio. \`final\` es la toma que va al comercial (${videoModel(ctx.videoModel).usdPerSecond} USD por segundo, ${videoModel(ctx.videoModel).durations.join(' o ')} s). \`draft\` es una prueba en baja resolución (${MODELS.draft.usdPerSecond} USD por segundo, 5, 8 o 10 s) para comprobar un movimiento arriesgado antes de pagar la final. El encuadre lo define la imagen de partida.`, z.object({
     prompt: z.string().min(10).describe('Qué ocurre en el plano y cómo se mueve la cámara. En inglés rinde mejor.'),
     image_file: path.describe('Imagen de partida: el cuadro del storyboard de ese plano.'),
     duration_seconds: z.number(),
@@ -217,11 +220,11 @@ export function mediaTools(ctx: ToolContext) {
     filename: z.string().describe('Nombre de salida terminado en .mp4, por ejemplo S01-t1.mp4.'),
   }), async (input, tmp) => {
     const name = output(input.filename, '.mp4')
-    const m = MODELS.video[input.quality]
+    const m = input.quality === 'final' ? videoModel(ctx.videoModel) : MODELS.draft
     if (!(m.durations as readonly number[]).includes(input.duration_seconds)) throw new Error(`con calidad ${input.quality} la duración debe ser ${m.durations.join(' o ')} segundos; el sobrante se recorta en el montaje`)
     if (kindOf(input.image_file) !== 'image') throw new Error('image_file debe ser una imagen')
     const imageUrl = await ctx.files.url(resolve(input.image_file))
-    return paid(m.usdPerSecond * input.duration_seconds, tmp, name, () => fal.generateVideo({ prompt: input.prompt, imageUrl, durationSeconds: input.duration_seconds, quality: input.quality, negativePrompt: input.negative_prompt }), { tool: `generate_video (${input.quality})`, provider: 'fal.ai', prompt: input.prompt, inputs: [input.image_file], license: FAL_LICENSE })
+    return paid(m.usdPerSecond * input.duration_seconds, tmp, name, () => fal.generateVideo({ prompt: input.prompt, imageUrl, durationSeconds: input.duration_seconds, quality: input.quality, negativePrompt: input.negative_prompt, model: ctx.videoModel }), { tool: `generate_video (${input.quality})`, provider: 'fal.ai', prompt: input.prompt, inputs: [input.image_file], license: FAL_LICENSE })
   }))
 
   if (has('voice')) tools.push(
