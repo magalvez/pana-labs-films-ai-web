@@ -4,7 +4,7 @@ import { Markdown } from './markdown'
 import { Media } from './media'
 
 type Row = { id: string; name: string; brief: string; scheme: string; status: string; reason: string | null; brand: string | null; budget_cap: number; spent: number; simulation: boolean; created_at: string; approved: number; stages: number; runs: number; reworks: number; generation: number; master: string | null; shares: number; last_activity: string | null }
-type Run = { stage: string; who: string; name: string; kind: 'agente' | 'auditor' | 'memoria'; n: number; usd: number; repeat: boolean; startedAt: string; endedAt: string }
+type Run = { stage: string; who: string; name: string; kind: 'agente' | 'auditor' | 'memoria' | 'exploracion'; n: number; usd: number; repeat: boolean; startedAt: string; endedAt: string }
 type Tokens = { input: number; cacheRead: number; cacheWrite: number; output: number }
 const TOKENS: [keyof Tokens, string, string][] = [
   ['cacheRead', 'Releer lo ya enviado', 'Todo lo anterior de la conversación, imágenes incluidas, que se reenvía en cada paso. Se cobra a precio de caché.'],
@@ -261,7 +261,7 @@ function Sheet({ row, act, onOpen, onChanged, onDeleted }: { row: Row; act: Act;
             <table className="bars">
               <thead><tr><th scope="col">Agente</th><th scope="col"><span className="sr">Reparto</span></th><th scope="col" className="num">Costo</th><th scope="col" className="num">Veces</th></tr></thead>
               <tbody>{agents.map((a) => (
-                <tr key={`${a.stage}/${a.id}`}><th scope="row">{a.name}<small>{a.kind === 'memoria' ? 'Para el cliente' : stageName(a.stage)}</small></th><td className="bar"><Split first={a.firstPassUsd} rework={a.reworkUsd} max={maxAgent} label={a.name} /></td><td className="num">{usd(a.usd)}</td><td className="num">{a.runs}</td></tr>
+                <tr key={`${a.stage}/${a.id}`}><th scope="row">{a.name}<small>{a.kind === 'memoria' ? 'Para el cliente' : a.kind === 'exploracion' ? 'Antes de producir' : stageName(a.stage)}</small></th><td className="bar"><Split first={a.firstPassUsd} rework={a.reworkUsd} max={maxAgent} label={a.name} /></td><td className="num">{usd(a.usd)}</td><td className="num">{a.runs}</td></tr>
               ))}</tbody>
             </table>
           </section>
@@ -291,7 +291,7 @@ function Sheet({ row, act, onOpen, onChanged, onDeleted }: { row: Row; act: Act;
             <summary>Bitácora: {costs.runs.length} ejecuciones</summary>
             <table className="plain">
               <thead><tr><th scope="col">Hora</th><th scope="col">Quién</th><th scope="col">Vuelta</th><th scope="col" className="num">Costo</th></tr></thead>
-              <tbody>{costs.runs.map((r, i) => <tr key={i} className={r.repeat ? 'repeat' : ''}><td>{clock(r.startedAt)}</td><th scope="row">{r.name}</th><td>{r.kind === 'auditor' ? `Auditoría ${r.n}` : r.kind === 'memoria' ? 'Memoria' : `Versión ${r.n}`}{r.repeat && ' (repetición)'}</td><td className="num">{usd(r.usd)}</td></tr>)}</tbody>
+              <tbody>{costs.runs.map((r, i) => <tr key={i} className={r.repeat ? 'repeat' : ''}><td>{clock(r.startedAt)}</td><th scope="row">{r.name}</th><td>{r.kind === 'auditor' ? `Auditoría ${r.n}` : r.kind === 'memoria' ? 'Memoria' : r.kind === 'exploracion' ? 'Exploración' : `Versión ${r.n}`}{r.repeat && ' (repetición)'}</td><td className="num">{usd(r.usd)}</td></tr>)}</tbody>
             </table>
           </details>
         </>

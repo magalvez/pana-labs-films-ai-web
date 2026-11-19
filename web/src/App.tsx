@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Admin } from './Admin'
 import { Config, type Settings } from './Config'
 import { Explore } from './Explore'
@@ -126,6 +126,14 @@ export function App() {
 
   const scheme = schemes.find((s) => s.id === detail?.scheme) ?? schemes[0]
   const endReplay = useCallback(() => setReplaying(false), [])
+  // Cierre de rodaje: solo cuando la producción termina mientras la estás mirando, no al abrir una ya entregada.
+  const [wrapped, setWrapped] = useState<string | null>(null)
+  const last = useRef<{ id: string; status: string } | null>(null)
+  useEffect(() => {
+    if (!detail) return
+    if (last.current?.id === detail.id && last.current.status !== 'done' && detail.status === 'done') setWrapped(detail.name)
+    last.current = { id: detail.id, status: detail.status }
+  }, [detail?.id, detail?.status])
   const post = (path: string, body?: unknown) => act(async () => { try { await api(`/projects/${pid}/${path}`, 'POST', body ?? {}) } finally { pollNow.current() } })
 
   if (config && !signedIn) return <Login onSubmit={async (email, password) => {
@@ -191,14 +199,26 @@ export function App() {
         )}
       </header>
 
+      {wrapped && (
+        <div className="wrap" role="status" onClick={() => setWrapped(null)}>
+          <div className="confetti" aria-hidden="true">{Array.from({ length: 24 }, (_, n) => <i key={n} style={{ '--n': n } as CSSProperties} />)}</div>
+          <div className="wrap-card">
+            <p className="wrap-kicker">Fin de rodaje</p>
+            <h2>¡Corten!</h2>
+            <p>«{wrapped}» pasó las cinco etapas y está entregado. La pieza y su hoja de costos te esperan en Producciones.</p>
+            <button className="primary" autoFocus onClick={() => setWrapped(null)}>Ver el estudio</button>
+          </div>
+        </div>
+      )}
       {error && <p className="error" role="alert">{error} <button onClick={() => setError('')}>Cerrar</button></p>}
 
       {screen === 'producciones' && <Admin act={act} onOpen={(id) => { setPid(id); go('studio') }} />}
       {screen === 'equipo' && me && <Team me={me.email} act={act} />}
       {screen === 'configuracion' && settings && <Config settings={settings} schemes={schemes} act={act} onChange={setSettings} />}
-      {screen === 'studio' && detail?.status === 'exploring' && <Explore project={detail} act={act} onChanged={() => pollNow.current()} onRaise={() => budgetDialog.current?.showModal()} />}
+      {screen === 'studio' && detail?.status === 'exploring' && <Explore project={detail} admin={me?.role === 'admin'} act={act} onChanged={() => pollNow.current()} onRaise={() => budgetDialog.current?.showModal()} />}
       <main hidden={screen !== 'studio' || detail?.status === 'exploring'}>
         <section className="stage-floor">
+          {detail && <p className={`on-air ${detail.status}`} role="status">{detail.status === 'running' ? 'En el aire' : detail.status === 'done' ? 'Entregado' : detail.status === 'waiting_human' ? 'Te esperan en el plató' : 'Fuera del aire'}</p>}
           <Office key={pid ?? 'empty'} scheme={scheme} events={events} replay={replay} selected={selected} onSelect={setSelected} onReplayEnd={endReplay} />
           {!projects.length && (
             <div className="empty">

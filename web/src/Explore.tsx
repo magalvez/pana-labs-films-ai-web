@@ -24,7 +24,7 @@ function Shot({ pid, file, alt }: { pid: string; file: string; alt: string }) {
 }
 
 /** Sala de exploración: se prueban looks con imágenes fijas, se eligen las referencias y recién entonces arranca la producción. */
-export function Explore({ project, act, onChanged, onRaise }: { project: Project; act: Act; onChanged: () => void; onRaise: () => void }) {
+export function Explore({ project, admin, act, onChanged, onRaise }: { project: Project; admin: boolean; act: Act; onChanged: () => void; onRaise: () => void }) {
   const pid = project.id
   const [x, setX] = useState<Exploration | null>(null)
   const [busy, setBusy] = useState<Record<string, number>>({})
@@ -37,7 +37,13 @@ export function Explore({ project, act, onChanged, onRaise }: { project: Project
   const seen = useRef<Set<string> | null>(null)
   const base = `/projects/${pid}/exploration`
 
-  const take = (next: Exploration) => setX((old) => ({ ...(old ?? { usdPerImage: 0, imageModel: '', productPhotos: 0 }), ...next }))
+  // Del servidor se toman los tableros que existen y sus imágenes; los textos en pantalla son los de quien escribe,
+  // para que una respuesta que tarda no borre lo tecleado mientras tanto.
+  const take = (next: Exploration) => setX((old) => (!old ? next : {
+    ...old, ...next, idea: old.idea || next.idea,
+    boards: next.boards.map((b) => { const mine = old.boards.find((o) => o.id === b.id); return mine ? { ...b, title: mine.title, prompt: mine.prompt, note: mine.note, aspect: mine.aspect, withProduct: mine.withProduct } : b }),
+  }))
+  const reload = () => act(async () => { const got = await api<Exploration>(base); setX((old) => old && { ...old, boards: old.boards.map((b) => ({ ...b, images: got.boards.find((o) => o.id === b.id)?.images ?? b.images })) }) })
   useEffect(() => {
     seen.current = null; setX(null); setLink('')
     void act(async () => { const got = await api<Exploration>(base); seen.current = new Set(got.boards.flatMap((b) => b.images.map((i) => i.file))); setX(got) })
@@ -63,7 +69,7 @@ export function Explore({ project, act, onChanged, onRaise }: { project: Project
   const pick = (i: Image) => {
     // Se marca al instante y se confirma con el servidor.
     setX((old) => old && { ...old, boards: old.boards.map((b) => ({ ...b, images: b.images.map((im) => (im.file === i.file ? { ...im, selected: !i.selected } : im)) })) })
-    void act(async () => take(await api<Exploration>(`${base}/select`, 'POST', { file: i.file, selected: !i.selected })))
+    void act(async () => take(await api<Exploration>(`${base}/select`, 'POST', { file: i.file, selected: !i.selected }))).then((ok) => { if (!ok) void reload() })
   }
   const share = () => act(async () => { const s = await api<{ token: string }>(`${base}/share`, 'POST', {}); setLink(`${location.origin}/p/${s.token}`); setCopied(false) })
   const start = () => {
@@ -169,7 +175,7 @@ export function Explore({ project, act, onChanged, onRaise }: { project: Project
         <div className="reel-actions">
           {link
             ? <span className="reel-link"><input readOnly value={link} aria-label="Enlace para el cliente" onFocus={(e) => e.currentTarget.select()} /><button onClick={() => navigator.clipboard.writeText(link).then(() => setCopied(true)).catch(() => {})}>{copied ? 'Copiado' : 'Copiar'}</button></span>
-            : <button disabled={!chosen.length} onClick={share}>Enlace del moodboard para el cliente</button>}
+            : admin && <button disabled={!chosen.length} onClick={share}>Enlace del moodboard para el cliente</button>}
           <button className="primary action" disabled={launching || Object.values(busy).some(Boolean)} onClick={start}>{chosen.length ? `Iniciar producción con ${chosen.length} referencia${chosen.length > 1 ? 's' : ''}` : 'Saltar e iniciar producción'}</button>
         </div>
       </footer>

@@ -3,7 +3,7 @@ import './explore.css'
 import { Markdown } from './markdown'
 
 type Video = { index: number; label: string; seconds: number | null; width: number | null; height: number | null }
-type Mood = { idea: string; boards: { title: string; note: string; images: number[] }[] }
+type Mood = { idea: string; boards: { title: string; note: string; images: string[] }[] }
 type Share = { name: string; brand: string | null; expiresAt: string; report: string; videos: Video[]; moodboard?: Mood }
 
 const day = (ts: string) => new Date(ts).toLocaleDateString('es', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -86,9 +86,11 @@ export function Preview({ token }: { token: string }) {
 /** El moodboard: una portada con la primera imagen, la idea y cada tablero con lo elegido. */
 function Moodboard({ token, share, mood }: { token: string; share: Share; mood: Mood }) {
   const [zoom, setZoom] = useState<number | null>(null)
+  // Todas las imágenes en orden, para recorrerlas ampliadas.
+  const all = mood.boards.flatMap((b) => b.images)
   const grid = useRef<HTMLDivElement>(null)
-  const src = (i: number) => `/api/public/${token}/image/${i}`
-  const total = mood.boards.reduce((n, b) => n + b.images.length, 0)
+  const src = (name: string) => `/api/public/${token}/image/${name}`
+  const total = all.length
   // Cada imagen aparece cuando entra en pantalla.
   useEffect(() => {
     const seen = new IntersectionObserver((entries) => { for (const e of entries) if (e.isIntersecting) { e.target.classList.add('in'); seen.unobserve(e.target) } }, { threshold: 0.12 })
@@ -122,7 +124,7 @@ function Moodboard({ token, share, mood }: { token: string; share: Share; mood: 
           <section key={b.title + b.images[0]} className="mood-board">
             <header><h2>{b.title}</h2>{b.note && <p>{b.note}</p>}</header>
             <div className="mood-grid">
-              {b.images.map((i, n) => <button key={i} style={{ transitionDelay: `${n * 110}ms` }} aria-label={`Ampliar ${b.title}, imagen ${n + 1}`} onClick={() => setZoom(i)}><img src={src(i)} alt={`${b.title}, imagen ${n + 1}`} loading="lazy" /></button>)}
+              {b.images.map((i, n) => <button key={i} style={{ transitionDelay: `${n * 110}ms` }} aria-label={`Ampliar ${b.title}, imagen ${n + 1}`} onClick={() => setZoom(all.indexOf(i))}><img src={src(i)} alt={`${b.title}, imagen ${n + 1}`} loading="lazy" /></button>)}
             </div>
           </section>
         ))}
@@ -134,7 +136,7 @@ function Moodboard({ token, share, mood }: { token: string; share: Share; mood: 
       {zoom !== null && (
         <div className="lightbox" role="dialog" aria-modal="true" aria-label="Imagen ampliada" onClick={() => setZoom(null)}>
           <figure onClick={(e) => e.stopPropagation()}>
-            <img key={zoom} src={src(zoom)} alt="" />
+            <img key={zoom} src={src(all[zoom])} alt="" />
             <figcaption>
               <span>{zoom + 1} de {total}</span>
               <button onClick={() => setZoom((zoom - 1 + total) % total)}>Anterior</button>

@@ -76,9 +76,11 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
     if (!share) return c.json(gone, 404)
     return c.json({ name: share.name, brand: share.brand, expiresAt: share.expiresAt, report: share.report, videos: share.videos.map((v, i) => ({ index: i, label: v.label, seconds: v.seconds, width: v.width, height: v.height })), moodboard: { idea: share.moodboard.idea, boards: share.moodboard.boards } })
   })
-  app.get('/api/public/:token/image/:index', async (c) => {
+  // ponytail: cada imagen vuelve a abrir el enlace completo; guardar el moodboard unos segundos si la página se llena de visitas.
+  app.get('/api/public/:token/image/:name', async (c) => {
     const share = await engine.openShare(c.req.param('token'))
-    const path = share?.moodboard.paths[Number(c.req.param('index'))]
+    const name = c.req.param('name')
+    const path = share && Object.hasOwn(share.moodboard.paths, name) ? share.moodboard.paths[name] : null
     const bytes = path ? await engine.files.readBytes(`${share!.projectId}/${path}`) : null
     if (!bytes) return c.json(gone, 404)
     return c.body(bytes as Uint8Array<ArrayBuffer>, 200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
@@ -222,7 +224,11 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
     const { file, selected } = await json(c)
     return c.json(await engine.selectExploration(c.req.param('id'), String(file), selected === true))
   })
-  app.post('/api/projects/:id/exploration/share', async (c) => c.json(await engine.shareMoodboard(c.req.param('id'), c.get('email')), 201))
+  // Crear un enlace público es cosa de administradores, igual que los enlaces de la pieza.
+  app.post('/api/projects/:id/exploration/share', async (c) => {
+    if (c.get('role') !== 'admin') return c.json({ error: 'Solo un administrador puede crear enlaces para clientes' }, 403)
+    return c.json(await engine.shareMoodboard(c.req.param('id'), c.get('email')), 201)
+  })
   app.post('/api/projects/:id/start', async (c) => (await engine.startProduction(c.req.param('id')), c.json(ok)))
   app.post('/api/projects/:id/decision', async (c) => {
     const { approve, comment, agents, references } = await json(c)

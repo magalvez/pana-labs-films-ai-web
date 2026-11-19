@@ -273,7 +273,8 @@ test('con exploración el proyecto espera, lo elegido se vuelve referencia y rec
   await engine.selectExploration(id, images[1].file, true)
   const { token } = await engine.shareMoodboard(id, 'qa@example.com')
   const share = await engine.openShare(token)
-  assert.deepEqual([share!.moodboard.idea, share!.moodboard.paths, share!.report, share!.videos.length], ['Una mañana cualquiera', [images[1].file], '', 0])
+  assert.ok(token.startsWith('m-'))
+  assert.deepEqual([share!.moodboard.idea, Object.values(share!.moodboard.paths), share!.report, share!.videos.length], ['Una mañana cualquiera', [images[1].file], '', 0])
   await engine.startProduction(id)
   await assert.rejects(engine.startProduction(id), /ya no está en exploración/)
   await assert.rejects(engine.generateExploration(id, board.id), /ya no está en exploración/)
@@ -295,6 +296,21 @@ test('la exploración no gasta por encima del tope y la propuesta del modelo se 
   await engine.generateExploration(id, boards[0].id, 4)
   await assert.rejects(engine.generateExploration(id, boards[0].id, 4), /Falta presupuesto/)
   assert.ok(Math.abs((await engine.getProject(id)).spent - 0.96) < 1e-9)
+  // Dos generaciones a la vez no pasan el tope entre las dos: la segunda ve lo que la primera apartó.
+  const tight = await engine.createProject({ name: 'A la vez', brief: 'x', budgetCap: 0.4, explore: true })
+  const two = (await engine.suggestExploration(tight.id)).boards
+  const both = await Promise.allSettled([engine.generateExploration(tight.id, two[0].id, 4), engine.generateExploration(tight.id, two[1].id, 4)])
+  assert.deepEqual(both.map((r) => r.status).sort(), ['fulfilled', 'rejected'])
+  assert.ok((await engine.getProject(tight.id)).spent <= 0.4 + 1e-9)
+  // Pedir más propuestas no borra los tableros ya escritos.
+  assert.equal((await engine.suggestExploration(tight.id)).boards.length, 6)
+  // Con las referencias casi llenas, iniciar avisa antes de copiar nada y el proyecto sigue en exploración.
+  for (let n = 0; n < 29; n++) await engine.addReference(tight.id, MEDIA, '.jpg', 'image/jpeg', '')
+  const made = (await engine.getExploration(tight.id)).boards.flatMap((b) => b.images)
+  await engine.selectExploration(tight.id, made[0].file, true)
+  await engine.selectExploration(tight.id, made[1].file, true)
+  await assert.rejects(engine.startProduction(tight.id), /elige como máximo 1/)
+  assert.deepEqual([(await engine.getProject(tight.id)).status, (await engine.listReferences(tight.id)).length], ['exploring', 29])
   assert.deepEqual(parseSuggestion('Claro:\n{"idea":"i","boards":[{"title":"Look","prompt":"a warm kitchen at dawn","aspect":"2:1"},{"title":"","prompt":"x"}]}').boards, [{ title: 'Look', prompt: 'a warm kitchen at dawn', note: '', aspect: '16:9' }])
   assert.throws(() => parseSuggestion('no hay json'), /No se pudo armar/)
 })

@@ -1,0 +1,98 @@
+/* Acabado del estudio: movimiento con intención en lo que ya existía. Se carga al final y no cambia la estructura.
+   Cada efecto dice algo: qué está vivo, qué te espera, qué acaba de pasar. */
+
+::selection { background: var(--amber); color: var(--ink); }
+html { scrollbar-color: var(--slate-line) var(--night); }
+
+/* Botones con peso: se hunden al pulsar y el principal respira al acercarse. */
+button { transition: background .15s, transform .08s, box-shadow .2s; }
+button:active:not(:disabled) { transform: translateY(2px); }
+button.primary:hover:not(:disabled) { box-shadow: 0 0 0 3px rgba(242, 182, 50, .28); }
+
+/* Diálogos: entran como una hoja que cae sobre la mesa, con el estudio desenfocado detrás. */
+dialog[open] { animation: sheet-drop .28s cubic-bezier(.2, .8, .2, 1); }
+dialog::backdrop { background: rgba(8, 11, 20, .72); backdrop-filter: blur(5px); animation: veil .2s both; }
+@keyframes sheet-drop { from { opacity: 0; transform: translateY(-18px) rotate(-.8deg); } }
+@keyframes veil { from { opacity: 0; } }
+
+/* Avisos de error: bajan desde la claqueta en vez de aparecer de golpe. */
+.error { animation: notice .25s cubic-bezier(.2, .8, .2, 1); }
+@keyframes notice { from { transform: translateY(-100%); } }
+
+/* Cabecera: la etapa en curso late, la aprobada lleva su marca, y "En marcha" tiene luz de grabación. */
+.stages li { transition: background .4s, border-color .4s, color .4s; }
+.stages li.now { animation: now-beat 2.2s ease-in-out infinite; }
+@keyframes now-beat { 50% { box-shadow: 0 0 0 4px rgba(242, 182, 50, .25); } }
+.stages li.ok::after { content: ' ✓'; }
+.status.running::before, .status.exploring::before { content: ''; display: inline-block; width: 9px; height: 9px; margin-right: 8px; border-radius: 50%; background: var(--red); animation: rec 1.2s steps(2, jump-none) infinite; }
+.status.exploring::before { background: var(--amber); }
+@keyframes rec { 50% { opacity: .15; } }
+.budget.near strong { animation: pulse-ink 1.6s ease-in-out infinite; }
+@keyframes pulse-ink { 50% { color: var(--amber); } }
+
+/* Oficina: letrero "En el aire" sobre el plató, encendido solo mientras los agentes trabajan. */
+.on-air { align-self: center; display: flex; gap: 10px; align-items: center; padding: 4px 14px; font: 15px var(--pixel); letter-spacing: 2px; text-transform: uppercase; color: #5d6887; border: 2px solid var(--slate-line); background: #0b0f1c; transition: color .5s, border-color .5s, box-shadow .5s; }
+.on-air::before { content: ''; width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+.on-air.running { color: #ff5a50; border-color: #ff5a50; box-shadow: 0 0 18px rgba(255, 90, 80, .55), inset 0 0 12px rgba(255, 90, 80, .25); animation: lamp 3.4s ease-in-out infinite; }
+.on-air.waiting_human, .on-air.paused { color: var(--amber); border-color: var(--amber); }
+.on-air.done { color: #7be29a; border-color: #3c8f58; }
+@keyframes lamp { 50% { box-shadow: 0 0 30px rgba(255, 90, 80, .8), inset 0 0 14px rgba(255, 90, 80, .35); } }
+.office { transition: box-shadow .8s; }
+.on-air.running + .office { box-shadow: 0 0 0 4px #0b0f1c, 0 0 0 6px var(--slate-line), 0 24px 80px rgba(63, 193, 176, .16); }
+
+/* Decisión pendiente: sube desde abajo y su borde llama hasta que la atiendes. */
+.decision { animation: rise-in .4s cubic-bezier(.2, .8, .2, 1), call 2s 1s ease-in-out 3; }
+@keyframes rise-in { from { opacity: 0; transform: translateY(22px); } }
+@keyframes call { 50% { box-shadow: -6px 0 0 0 rgba(242, 182, 50, .45), 0 0 34px rgba(242, 182, 50, .25); } }
+.log li { animation: rise-in .3s both; }
+
+/* Secciones: Producciones, Equipo y Configuración entran con un corte suave. */
+.backlot { animation: cut-in .32s ease-out; }
+@keyframes cut-in { from { opacity: 0; transform: translateY(10px); } }
+.marcador > div { animation: rise-in .45s cubic-bezier(.2, .8, .2, 1) both; }
+.marcador > div:nth-child(2) { animation-delay: 70ms; } .marcador > div:nth-child(3) { animation-delay: 140ms; } .marcador > div:nth-child(4) { animation-delay: 210ms; }
+
+/* Tiras de película: entran una tras otra y, al pasar el cursor, la película avanza por sus perforaciones. */
+.reel-list li { animation: strip-in .4s cubic-bezier(.2, .8, .2, 1) both; }
+.reel-list li:nth-child(2) { animation-delay: 50ms; } .reel-list li:nth-child(3) { animation-delay: 100ms; } .reel-list li:nth-child(4) { animation-delay: 150ms; }
+.reel-list li:nth-child(5) { animation-delay: 200ms; } .reel-list li:nth-child(6) { animation-delay: 250ms; } .reel-list li:nth-child(n+7) { animation-delay: 300ms; }
+@keyframes strip-in { from { opacity: 0; transform: translateX(-24px); } }
+.strip { transition: transform .2s cubic-bezier(.2, .8, .2, 1), box-shadow .2s; }
+.strip:hover { transform: translateX(6px); box-shadow: -6px 0 0 var(--amber); }
+.strip:hover .holes { animation: advance .5s linear infinite; }
+@keyframes advance { to { background-position: center 28px; } }
+.strip-stages i { transition: background .5s; }
+
+/* Hoja de costos: las barras crecen desde cero y la cifra grande cae con peso. */
+.split .seg { transform-origin: left; animation: grow .7s cubic-bezier(.2, .8, .2, 1) both; }
+.split .seg.rework { animation-delay: .25s; }
+@keyframes grow { from { transform: scaleX(0); } }
+.hero-number { animation: land .5s cubic-bezier(.3, 1.4, .5, 1) both; }
+@keyframes land { from { opacity: 0; transform: translateY(-16px) scale(1.06); } }
+.config .models tr { transition: background .2s; }
+.config .models tr:hover { background: rgba(28, 26, 23, .06); }
+
+/* Entrada al estudio. */
+.login form { animation: sheet-drop .5s cubic-bezier(.2, .8, .2, 1) both; }
+
+/* Cierre de rodaje: cuando una producción termina mientras la miras. */
+.wrap { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; text-align: center; padding: 24px; background: radial-gradient(ellipse 70% 60% at 50% 40%, #2a3760 0%, rgba(11, 15, 28, .96) 70%); animation: veil .3s both; cursor: pointer; overflow: hidden; }
+.wrap-card { animation: land .6s .15s cubic-bezier(.3, 1.4, .5, 1) both; }
+.wrap-kicker { margin: 0 0 8px; font: 20px var(--pixel); color: var(--amber); letter-spacing: 3px; text-transform: uppercase; }
+.wrap h2 { font-size: clamp(54px, 13vw, 150px); line-height: .95; color: var(--paper); }
+.wrap p { margin: 14px auto 22px; max-width: 46ch; color: var(--chalk); font-size: 18px; }
+.wrap button { color: var(--ink); }
+.confetti { position: absolute; inset: 0; pointer-events: none; }
+.confetti i { position: absolute; top: -20px; left: calc(var(--n) * 4.2%); width: 10px; height: 10px; background: var(--amber); animation: fall calc(2.2s + var(--n) * 90ms) calc(var(--n) * 55ms) linear infinite; }
+.confetti i:nth-child(3n) { background: var(--teal); width: 8px; height: 14px; } .confetti i:nth-child(3n+1) { background: var(--paper); } .confetti i:nth-child(5n) { background: var(--red); }
+@keyframes fall { to { transform: translate3d(calc((var(--n) - 12) * 6px), 110vh, 0) rotate(720deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .01ms !important; }
+  .confetti { display: none; }
+}
+
+/* El letrero ocupa altura: la oficina cede lo justo para que la decisión siga a la vista. */
+.stage-floor:has(.on-air) .office { max-width: calc((100vh - 320px) * 648 / 352); }
+.stage-floor:has(.on-air):has(.decision) .office { max-width: calc((100vh - 400px) * 648 / 352); }
+@media (max-width: 980px) { .stage-floor:has(.on-air) .office, .stage-floor:has(.on-air):has(.decision) .office { max-width: 100%; } }

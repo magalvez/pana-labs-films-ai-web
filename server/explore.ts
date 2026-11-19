@@ -60,7 +60,8 @@ export function claudeExplorer(): Explorer {
       const u = message.usage
       const use: Usage = { model: DEFAULT_MODEL, input: u.input_tokens, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens }
       const raw = message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n')
-      return { ...parseSuggestion(raw), costUsd: usdOf(use), use }
+      // Una respuesta que no se puede leer también se pagó: el costo viaja en el error para que el motor lo registre.
+      try { return { ...parseSuggestion(raw), costUsd: usdOf(use), use } } catch (err) { throw Object.assign(err as Error, { costUsd: usdOf(use), use }) }
     },
     async image({ prompt, aspect, referenceUrls, model }) {
       const g = await fal.generateImage({ prompt, aspect, referenceUrls, model })
