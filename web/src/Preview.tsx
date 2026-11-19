@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import './explore.css'
+import { ClientVoice } from './Extras'
 import { Markdown } from './markdown'
 
 type Video = { index: number; label: string; seconds: number | null; width: number | null; height: number | null }
@@ -68,6 +69,7 @@ export function Preview({ token }: { token: string }) {
         </section>
       )}
 
+      {video && <ClientVoice token={token} what="esta versión" target={video.label} />}
       <article className="programme">
         <header>
           <p className="kicker">Memoria de producción</p>
@@ -129,6 +131,7 @@ function Moodboard({ token, share, mood }: { token: string; share: Share; mood: 
           </section>
         ))}
       </div>
+      <ClientVoice token={token} what="el look" />
       <footer className="mood-foot">
         <p>Estas imágenes son exploración del look, hechas con inteligencia artificial generativa: definen la dirección, no son cuadros finales del comercial. Disponible hasta el {day(share.expiresAt)}.</p>
         <button onClick={() => window.print()}>Imprimir o guardar como PDF</button>

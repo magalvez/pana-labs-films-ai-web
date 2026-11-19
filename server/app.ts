@@ -3,6 +3,8 @@ import { bodyLimit } from 'hono/body-limit'
 import { extname } from 'node:path'
 import type { Engine } from './engine/pipeline.ts'
 import type { Role, Users } from './users.ts'
+import type { Telegram } from './telegram.ts'
+import type { Finance } from './finance.ts'
 import { CONTENT_TYPES } from './engine/tools.ts'
 import { brandDir } from './engine/types.ts'
 import { DEFAULT_MODEL, MODELS, RECOMMENDED } from './engine/models.ts'
@@ -45,6 +47,10 @@ export type AppOptions = {
   auth: (token: string) => Promise<{ email: string; role: Role } | null>
   /** Gestión del equipo. Sin ella (pruebas del motor) la pantalla de equipo no está disponible. */
   users?: Users
+  /** Ventas y gastos adicionales por producción. Sin él (pruebas del motor) la rentabilidad no está disponible. */
+  finance?: Finance
+  /** Avisos por Telegram, enlazados por persona. Sin él no hay avisos. */
+  telegram?: Telegram
 }
 
 type Vars = { Variables: { email: string; role: Role } }
@@ -60,7 +66,7 @@ function ranged(c: { req: { header(name: string): string | undefined } }, bytes:
   return new Response(bytes.subarray(start, end + 1) as Uint8Array<ArrayBuffer>, { status: 206, headers: { ...headers, 'Content-Range': `bytes ${start}-${end}/${bytes.length}`, 'Content-Length': String(end - start + 1) } })
 }
 
-export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
+export function createApp({ engine, publicConfig, auth, users, finance, telegram }: AppOptions) {
   const app = new Hono<Vars>()
   app.onError((err, c) => {
     console.error(`${c.req.method} ${c.req.path}: ${err.message}`)
@@ -84,6 +90,11 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
     const bytes = path ? await engine.files.readBytes(`${share!.projectId}/${path}`) : null
     if (!bytes) return c.json(gone, 404)
     return c.body(bytes as Uint8Array<ArrayBuffer>, 200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' })
+  })
+  // El cliente aprueba o comenta desde su enlace. No dispara nada por sí solo: queda pendiente para el estudio.
+  app.post('/api/public/:token/feedback', bodyLimit({ maxSize: 8 * 1024, onError: (c) => c.json({ error: 'El comentario es demasiado largo' }, 413) }), async (c) => {
+    const saved = await engine.addClientFeedback(c.req.param('token'), await json(c))
+    return saved ? c.json(saved, 201) : c.json(gone, 404)
   })
   app.get('/api/public/:token/video/:index', async (c) => {
     const share = await engine.openShare(c.req.param('token'))
@@ -127,6 +138,14 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
   app.delete('/api/admin/projects/:id/shares/:token', async (c) => (await engine.revokeShare(c.req.param('id'), c.req.param('token')), c.json({ ok: true })))
   app.get('/api/admin/projects/:id/report', async (c) => c.json({ markdown: await engine.clientReport(c.req.param('id')) }))
   app.post('/api/admin/projects/:id/report', async (c) => c.json({ markdown: await engine.clientReport(c.req.param('id'), true) }))
+
+  // Rentabilidad: ventas y gastos adicionales por producción, y el informe con filtros.
+  const money = () => { if (!finance) throw new Error('La rentabilidad no está disponible en este servidor'); return finance }
+  app.get('/api/admin/finance/report', async (c) => c.json(await money().report({ from: c.req.query('from'), to: c.req.query('to'), month: c.req.query('month'), brand: c.req.query('brand'), status: c.req.query('status') })))
+  app.get('/api/admin/finance/projects/:id', async (c) => c.json(await money().forProject(c.req.param('id'))))
+  app.post('/api/admin/finance/projects/:id/:kind{sales|expenses}', async (c) => c.json(await money().create(c.req.param('id'), c.req.param('kind') === 'sales' ? 'sale' : 'expense', await json(c), c.get('email')), 201))
+  app.put('/api/admin/finance/entries/:entry', async (c) => c.json(await money().update(c.req.param('entry'), await json(c))))
+  app.delete('/api/admin/finance/entries/:entry', async (c) => (await money().remove(c.req.param('entry')), c.json({ ok: true })))
 
   const team = () => { if (!users) throw new Error('La gestión del equipo no está disponible en este servidor'); return users }
   app.get('/api/admin/users', async (c) => c.json(await team().list()))
@@ -195,7 +214,7 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
     if (!name || !brief) throw new Error('El proyecto necesita nombre y brief')
     if (!(budgetCap > 0 && budgetCap <= 10_000)) throw new Error('El tope de presupuesto debe estar entre 1 y 10 000 dólares')
     const brand = brandName ? { name: brandName, kit: text(body.brandKit, 20_000) } : undefined
-    return c.json(await engine.createProject({ name, brief, budgetCap, brand, references, explore: body.explore === true || body.explore === 'true' || body.explore === 'on' }), 201)
+    return c.json(await engine.createProject({ name, brief, budgetCap, brand, references, templateId: text(body.templateId, 40) || undefined, explore: body.explore === true || body.explore === 'true' || body.explore === 'on' }), 201)
   })
   app.get('/api/projects/:id', async (c) => c.json(await engine.getProject(c.req.param('id'))))
 
@@ -215,6 +234,19 @@ export function createApp({ engine, publicConfig, auth, users }: AppOptions) {
   })
 
   const ok = { ok: true }
+  // Mejora pedida al auditor de una etapa con la pieza ya entregada.
+  app.post('/api/projects/:id/improve', async (c) => {
+    const { stage, text: wish, budget } = await json(c)
+    await engine.requestImprovement(c.req.param('id'), String(stage), text(wish, 5000), Number(budget), c.get('email'))
+    return c.json(ok)
+  })
+  app.get('/api/projects/:id/feedback', async (c) => c.json(await engine.listClientFeedback(c.req.param('id'))))
+  app.post('/api/projects/:id/feedback/:note', async (c) => c.json(await engine.resolveClientFeedback(c.req.param('id'), c.req.param('note'), (await json(c)).status)))
+  // Avisos por Telegram: cada persona enlaza su propio chat.
+  const off = { enabled: false, linked: false }
+  app.get('/api/telegram', async (c) => c.json(telegram ? await telegram.status(c.get('email')) : off))
+  app.post('/api/telegram/link', async (c) => { if (!telegram) throw new Error('Los avisos por Telegram no están disponibles en este servidor'); return c.json(await telegram.link(c.get('email'))) })
+  app.post('/api/telegram/unlink', async (c) => (await telegram?.unlink(c.get('email')), c.json(off)))
   // Exploración del look antes de producir: tableros, opciones generadas, selección y moodboard para el cliente.
   app.get('/api/projects/:id/exploration', async (c) => c.json(await engine.getExploration(c.req.param('id'))))
   app.put('/api/projects/:id/exploration', async (c) => c.json(await engine.saveExploration(c.req.param('id'), await json(c))))

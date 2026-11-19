@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, blobUrl } from './api'
 import './explore.css'
+import { ClientNotes } from './Extras'
 
 type Image = { file: string; selected: boolean }
 type Board = { id: string; title: string; prompt: string; note: string; aspect: string; withProduct: boolean; images: Image[] }
@@ -108,6 +109,7 @@ export function Explore({ project, admin, act, onChanged, onRaise }: { project: 
         </dl>
       </header>
 
+      <ClientNotes pid={pid} act={act} refresh={0} />
       <section className="idea">
         <label>La idea, en dos o tres frases. La verá el cliente en el moodboard.
           <textarea rows={2} maxLength={800} value={x.idea} placeholder="Una mañana cualquiera se vuelve especial cuando…" onChange={(e) => setX({ ...x, idea: e.target.value })} onBlur={() => save(x)} />

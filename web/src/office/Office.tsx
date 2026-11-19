@@ -3,14 +3,18 @@ import { H, W, createWorld, type Ev, type SchemeT } from './world'
 
 const REPLAY_SPEED = 4
 
-type Props = { scheme: SchemeT; events: Ev[]; replay: number; selected: string | null; onSelect: (id: string | null) => void; onReplayEnd: () => void }
+// `free`: no hay producción elegida y la oficina vive sola. `rally`: contador que sube con cada "Nuevo proyecto".
+type Props = { scheme: SchemeT; events: Ev[]; replay: number; selected: string | null; onSelect: (id: string | null) => void; onReplayEnd: () => void; free?: boolean; rally?: number }
 
-export function Office({ scheme, events, replay, selected, onSelect, onReplayEnd }: Props) {
+export function Office({ scheme, events, replay, selected, onSelect, onReplayEnd, free = false, rally = 0 }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const calm = useMemo(() => matchMedia('(prefers-reduced-motion: reduce)').matches, [])
   // El mundo depende de qué esquema es, no de qué objeto lo trae: al renovarse la sesión llega una copia idéntica.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const world = useMemo(() => createWorld(scheme, calm), [scheme.id, calm])
+  const world = useMemo(() => createWorld(scheme, calm, free), [scheme.id, calm, free])
+  // Solo reacciona a un clic nuevo: al montarse con un contador ya avanzado no hay llamado.
+  const seenRally = useRef(rally)
+  useEffect(() => { if (rally !== seenRally.current) { seenRally.current = rally; world.rally() } }, [rally, world])
   const live = useRef({ events, cursor: 0, replaying: false, selected, hover: null as string | null, world })
   live.current.events = events
   live.current.selected = selected
@@ -77,9 +81,19 @@ export function Office({ scheme, events, replay, selected, onSelect, onReplayEnd
       className="office"
       role="img"
       aria-label="Oficina de agentes. La estatua de la raqueta del Mando abre un partido de tenis decorativo. La lista de agentes del panel lateral ofrece la misma información."
-      onMouseMove={(e) => { world.hot = world.hotspot(...point(e)); const a = world.hot ? null : at(e); live.current.hover = a?.id ?? null; e.currentTarget.style.cursor = a || world.hot ? 'pointer' : 'default' }}
-      onMouseLeave={() => { live.current.hover = null; world.hot = null }}
-      onClick={(e) => { if (world.hotspot(...point(e))) world.toggleTennis(); else onSelect(at(e)?.id ?? null) }}
+      onMouseMove={(e) => {
+        world.hot = world.hotspot(...point(e))
+        const a = world.hot ? null : at(e), id = a?.id ?? null
+        if (id !== live.current.hover) world.hover(id)
+        live.current.hover = id; e.currentTarget.style.cursor = a || world.hot ? 'pointer' : 'default'
+      }}
+      onMouseLeave={() => { live.current.hover = null; world.hot = null; world.hover(null) }}
+      onClick={(e) => {
+        if (world.hotspot(...point(e))) { world.toggleTennis(); return }
+        const a = at(e)
+        // Sin producción no hay hoja que mostrar: el clic solo hace que el personaje reaccione.
+        if (free) { if (a) world.poke(a.id) } else onSelect(a?.id ?? null)
+      }}
     />
   )
 }

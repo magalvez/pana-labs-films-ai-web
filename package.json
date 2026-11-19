@@ -24,6 +24,7 @@
     "@supabase/supabase-js": "^2.119.0",
     "hono": "^4.13.17",
     "postgres": "^4.1.0",
+    "qrcode-generator": "^1.4.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "remotion": "^4.0.544",

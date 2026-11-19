@@ -8,7 +8,7 @@ import type { Asset, Runner, ToolFamily } from './types.ts'
 
 const EXT = { image: '.jpg', video: '.mp4', audio: '.mp3' } as const
 /** Lo que un agente con herramientas produce además de sus entregables fijos, para que la simulación se parezca a la real. */
-const EXTRAS: Partial<Record<ToolFamily, string>> = { image: 'muestra.jpg', video: 'muestra.mp4', voice: 'muestra-voz.mp3', music: 'muestra-musica.mp3', versions: 'muestra-9x16.mp4' }
+const EXTRAS: Partial<Record<ToolFamily, string>> = { image: 'muestra.jpg', video: 'muestra.mp4', voice: 'muestra-voz.mp3', music: 'muestra-musica.mp3', versions: 'muestra-9x16.mp4', lipsync: 'muestra-lipsync.mp4' }
 
 const cache = new Map<Asset['kind'], Promise<Uint8Array>>()
 /** Archivos de muestra hechos con ffmpeg en el servidor, una vez por proceso. No llaman a ningún proveedor. */

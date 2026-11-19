@@ -89,6 +89,26 @@ export async function cut(clips: Clip[], out: string, fadeOut?: { seconds: numbe
   if (Math.abs(got - at) > 0.1) throw new Error(`el corte salió de ${got} s y debía durar ${at} s: a alguna toma le falta material después de su tramo para el encadenado`)
 }
 
+export type Frame = { file: string; seconds: number; /** PNG con transparencia (número de plano, voz) que se sobreimprime durante todo el cuadro. */ overlay?: string }
+/** Animatic: los cuadros del storyboard, cada uno el tiempo que dura su plano, en un solo video mudo de 16:9. */
+export async function animatic(frames: Frame[], out: string) {
+  // Sin fijar el ritmo de lectura, ffmpeg lee la imagen a 25 cuadros por segundo y al pasar a 30 cada plano se alarga unas centésimas.
+  const inputs = frames.flatMap((f) => ['-loop', '1', '-framerate', String(FPS), '-t', String(f.seconds), '-i', f.file])
+  const graph: string[] = []
+  let n = frames.length
+  frames.forEach((f, i) => {
+    if (f.overlay) {
+      inputs.push('-i', f.overlay)
+      graph.push(`[${i}:v]${fit(SIZES['16:9'])}[b${i}]`, `[b${i}][${n++}:v]overlay=0:0,setsar=1[v${i}]`)
+    } else graph.push(`[${i}:v]${fit(SIZES['16:9'])}[v${i}]`)
+  })
+  graph.push(`${frames.map((_, i) => `[v${i}]`).join('')}concat=n=${frames.length}:v=1:a=0,fps=${FPS}[v]`)
+  await ffmpeg(...inputs, '-filter_complex', graph.join(';'), '-map', '[v]', '-an', ...H264, out)
+  const total = frames.reduce((t, f) => t + f.seconds, 0)
+  const got = (await probe(out)).durationSeconds ?? 0
+  if (Math.abs(got - total) > 0.2) throw new Error(`el animatic salió de ${got} s y debía durar ${total} s`)
+}
+
 export type Grade = { contrast: number; saturation: number; brightness: number; gamma: number }
 const eq = (g: Grade) => `eq=contrast=${g.contrast}:saturation=${g.saturation}:brightness=${g.brightness}:gamma=${g.gamma}`
 /** Corrección de color de toda la pieza y, encima, correcciones propias de un tramo: un plano que quedó distinto a los demás. */

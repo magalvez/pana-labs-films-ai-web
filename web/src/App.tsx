@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Admin } from './Admin'
 import { Config, type Settings } from './Config'
 import { Explore } from './Explore'
+import { ClientNotes, Improve } from './Extras'
 import { api, openFile, setOnExpired, setToken, upload } from './api'
 import { Media, mediaKind } from './media'
 import { Team } from './Team'
+import { Profit } from './Profit'
 import { Office } from './office/Office'
 import type { Ev, SchemeT, StageT } from './office/world'
 
@@ -22,8 +24,8 @@ function masterPath(events: Ev[]): string | null {
   return done ? `${done.data.stage}/motion-graphics/v${done.data.version}/master.mp4` : null
 }
 
-type View = 'studio' | 'producciones' | 'equipo' | 'configuracion'
-const viewOf = (hash: string): View => (hash === '#/producciones' ? 'producciones' : hash === '#/equipo' ? 'equipo' : hash === '#/configuracion' ? 'configuracion' : 'studio')
+type View = 'studio' | 'producciones' | 'rentabilidad' | 'equipo' | 'configuracion'
+const viewOf = (hash: string): View => (hash === '#/producciones' ? 'producciones' : hash === '#/rentabilidad' ? 'rentabilidad' : hash === '#/equipo' ? 'equipo' : hash === '#/configuracion' ? 'configuracion' : 'studio')
 
 const STATUS: Record<string, string> = { exploring: 'Explorando el look', running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera tu decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
 const usd = (n: number) => `$${n.toFixed(2)}`
@@ -41,6 +43,10 @@ export function App() {
   const events = useMemo(() => (loadedEvents[0]?.projectId === pid ? loadedEvents : []), [loadedEvents, pid])
   const [selected, setSelected] = useState<string | null>(null)
   const [replay, setReplay] = useState(0)
+  // Sube con cada "Nuevo proyecto": la oficina libre se cuadra ante la noticia.
+  const [rally, setRally] = useState(0)
+  // Con la oficina en modo libre y a la vista, el formulario espera a que el equipo conteste y corra a sus puestos: detrás de un diálogo no se vería.
+  const callToSet = () => { setRally((n) => n + 1); const show = () => newDialog.current?.showModal(); if (!pid && viewOf(location.hash) === 'studio' && !matchMedia('(prefers-reduced-motion: reduce)').matches) window.setTimeout(show, 2300); else show() }
   const [replaying, setReplaying] = useState(false)
   const [error, setError] = useState('')
   const [brands, setBrands] = useState<Brand[]>([])
@@ -93,7 +99,7 @@ export function App() {
     if (!ready) return
     void act(async () => {
       const [s, st, ps, bs, who] = await Promise.all([api<SchemeT[]>('/schemes'), api<Settings>('/settings'), api<Project[]>('/projects'), api<Brand[]>('/brands'), api<{ email: string; role: 'admin' | 'member' }>('/me')])
-      setSchemes(s); setSettings(st); setProjects(ps); setBrands(bs); setMe(who); setPid((current) => (ps.some((p) => p.id === current) ? current : ps[0]?.id ?? null))
+      setSchemes(s); setSettings(st); setProjects(ps); setBrands(bs); setMe(who); setPid((current) => (ps.some((p) => p.id === current) ? current : null))
     })
   }, [act, ready])
 
@@ -126,6 +132,10 @@ export function App() {
 
   const scheme = schemes.find((s) => s.id === detail?.scheme) ?? schemes[0]
   const endReplay = useCallback(() => setReplaying(false), [])
+  // Un comentario del cliente que se quiere convertir en mejora: llega escrito al formulario.
+  const [wish, setWish] = useState('')
+  // Se vacía al cambiar de producción y cuando la indicación ya se envió (el estado cambia).
+  useEffect(() => setWish(''), [pid, detail?.status])
   // Cierre de rodaje: solo cuando la producción termina mientras la estás mirando, no al abrir una ya entregada.
   const [wrapped, setWrapped] = useState<string | null>(null)
   const last = useRef<{ id: string; status: string } | null>(null)
@@ -144,7 +154,8 @@ export function App() {
 
   const stage = scheme.stages.find((s) => s.id === detail?.currentStage)
   // Las pantallas de administración solo existen para administradores; a los demás la dirección los devuelve al estudio.
-  const screen: View = me?.role === 'admin' ? view : 'studio'
+  // Quien no administra solo tiene el estudio y sus propios avisos.
+  const screen: View = me?.role === 'admin' || view === 'configuracion' ? view : 'studio'
   return (
     <div className="app">
       <header className="slate">
@@ -155,15 +166,22 @@ export function App() {
             <nav className="views" aria-label="Secciones">
               <button aria-current={screen === 'studio' ? 'page' : undefined} onClick={() => go('studio')}>Estudio</button>
               <button aria-current={screen === 'producciones' ? 'page' : undefined} onClick={() => go('producciones')}>Producciones</button>
+              <button aria-current={screen === 'rentabilidad' ? 'page' : undefined} onClick={() => go('rentabilidad')}>Rentabilidad</button>
               <button aria-current={screen === 'equipo' ? 'page' : undefined} onClick={() => go('equipo')}>Equipo</button>
               <button aria-current={screen === 'configuracion' ? 'page' : undefined} onClick={() => go('configuracion')}>Configuración</button>
+            </nav>
+          )}
+          {me?.role === 'member' && (
+            <nav className="views" aria-label="Secciones">
+              <button aria-current={screen === 'studio' ? 'page' : undefined} onClick={() => go('studio')}>Estudio</button>
+              <button aria-current={screen === 'configuracion' ? 'page' : undefined} onClick={() => go('configuracion')}>Mis avisos</button>
             </nav>
           )}
           <div className="actions">
             <span className="loading" role="status">{loading > 0 && 'Cargando…'}</span>
             {screen === 'studio' && detail?.status === 'running' && <button onClick={() => post('pause')}>Pausar</button>}
             {screen === 'studio' && detail && events.length > 0 && <button disabled={replaying} onClick={() => { setReplaying(true); setReplay((n) => n + 1) }}>{replaying ? 'Reproduciendo…' : 'Ver repetición'}</button>}
-            <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
+            <button className="primary" onClick={callToSet}>Nuevo proyecto</button>
             <button onClick={() => supabase.current?.auth.signOut()}>Cerrar sesión</button>
           </div>
         </div>
@@ -171,8 +189,8 @@ export function App() {
         <div className="slate-row second">
           <label className="field">
             <span>Producción</span>
-            <select value={pid ?? ''} onChange={(e) => setPid(e.target.value)} disabled={!projects.length}>
-              {!projects.length && <option value="">Sin producciones</option>}
+            <select value={pid ?? ''} onChange={(e) => setPid(e.target.value || null)} disabled={!projects.length}>
+              <option value="">{projects.length ? 'Elige una producción' : 'Sin producciones'}</option>
               {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.simulation ? ' (simulación)' : ''}</option>)}
             </select>
           </label>
@@ -213,21 +231,23 @@ export function App() {
       {error && <p className="error" role="alert">{error} <button onClick={() => setError('')}>Cerrar</button></p>}
 
       {screen === 'producciones' && <Admin act={act} onOpen={(id) => { setPid(id); go('studio') }} />}
+      {screen === 'rentabilidad' && <Profit act={act} />}
       {screen === 'equipo' && me && <Team me={me.email} act={act} />}
-      {screen === 'configuracion' && settings && <Config settings={settings} schemes={schemes} act={act} onChange={setSettings} />}
+      {screen === 'configuracion' && settings && <Config settings={settings} schemes={schemes} admin={me?.role === 'admin'} act={act} onChange={setSettings} />}
       {screen === 'studio' && detail?.status === 'exploring' && <Explore project={detail} admin={me?.role === 'admin'} act={act} onChanged={() => pollNow.current()} onRaise={() => budgetDialog.current?.showModal()} />}
       <main hidden={screen !== 'studio' || detail?.status === 'exploring'}>
         <section className="stage-floor">
           {detail && <p className={`on-air ${detail.status}`} role="status">{detail.status === 'running' ? 'En el aire' : detail.status === 'done' ? 'Entregado' : detail.status === 'waiting_human' ? 'Te esperan en el plató' : 'Fuera del aire'}</p>}
-          <Office key={pid ?? 'empty'} scheme={scheme} events={events} replay={replay} selected={selected} onSelect={setSelected} onReplayEnd={endReplay} />
+          <Office key={pid ?? 'empty'} scheme={scheme} events={events} replay={replay} selected={selected} onSelect={setSelected} onReplayEnd={endReplay} free={!pid} rally={rally} />
           {!projects.length && (
             <div className="empty">
               <h2>El estudio está a oscuras</h2>
               <p>Crea la primera producción y los agentes encienden las luces, sala por sala.</p>
-              <button className="primary" onClick={() => newDialog.current?.showModal()}>Nuevo proyecto</button>
+              <button className="primary" onClick={callToSet}>Nuevo proyecto</button>
             </div>
           )}
-          {detail && <Decision detail={detail} scheme={scheme} stage={stage} events={events} post={post} onSelect={setSelected} onReplay={() => { setReplaying(true); setReplay((n) => n + 1) }} />}
+          {detail && <ClientNotes pid={detail.id} act={act} refresh={events.filter((e) => e.type === 'client.feedback').length} onUse={['done', 'waiting_human'].includes(detail.status) ? setWish : undefined} />}
+          {detail && <Decision wish={wish} detail={detail} scheme={scheme} stage={stage} events={events} post={post} onSelect={setSelected} onReplay={() => { setReplaying(true); setReplay((n) => n + 1) }} />}
         </section>
         <aside className="sheet" aria-label="Hoja de llamado">
           {detail ? <Sheet scheme={scheme} detail={detail} events={events} selected={selected} onSelect={setSelected} post={post} /> : <p className="hint">Aquí aparece el detalle de cada agente: qué está haciendo, qué entregó y cuánto ha gastado.</p>}
@@ -246,6 +266,21 @@ export function App() {
           })
         }}>
           <h2>Nuevo proyecto</h2>
+          {projects.length > 0 && (
+            <label>Partir de una producción anterior (opcional)
+              <select name="templateId" defaultValue="" onChange={(e) => {
+                const from = projects.find((p) => p.id === e.target.value), form = e.currentTarget.form
+                if (!from || !form) return
+                // Trae su brief, su cliente y su tope para editarlos; sus imágenes de referencia se copian al crear.
+                ;(form.elements.namedItem('brief') as HTMLTextAreaElement).value = from.brief
+                ;(form.elements.namedItem('budgetCap') as HTMLInputElement).value = String(from.budget_cap)
+                setBrandName(from.brand ?? ''); setBrandKit(brands.find((b) => b.name === from.brand)?.kit ?? '')
+              }}>
+                <option value="">Empezar de cero</option>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+          )}
           <label>Nombre de la producción<input name="name" required maxLength={80} placeholder="Café Aurora, lanzamiento" /></label>
           <label>Brief del cliente<textarea name="brief" required rows={5} placeholder="Marca, producto, público, objetivo, duración y tono." /></label>
           <label>Cliente o marca (opcional)
@@ -368,9 +403,11 @@ function References({ pid, onAdded }: { pid: string; onAdded: (file: string) => 
   )
 }
 
-function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onReplay }: { detail: Detail; scheme: SchemeT; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<boolean>; onSelect: (id: string) => void; onReplay: () => void }) {
+function Decision({ wish, detail, scheme, stage, events, post: postNow, onSelect, onReplay }: { wish: string; detail: Detail; scheme: SchemeT; stage?: StageT; events: Ev[]; post: (path: string, body?: unknown) => Promise<boolean>; onSelect: (id: string) => void; onReplay: () => void }) {
   const [rejecting, setRejecting] = useState(false)
   const [comment, setComment] = useState('')
+  // Un comentario del cliente que se quiere usar al devolver la etapa llega ya escrito.
+  useEffect(() => { if (wish && detail.status === 'waiting_human') { setComment(wish); setRejecting(true) } }, [wish])
   const [agents, setAgents] = useState<string[]>([])
   // Las referencias subidas en esta revisión: si se devuelve la etapa, se nombran en la indicación.
   const [added, setAdded] = useState<string[]>([])
@@ -383,6 +420,8 @@ function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onRe
   const post = (path: string, body?: unknown) => { setSending(true); return postNow(path, body).finally(() => setSending(false)) }
   const { status, reason } = detail
   const master = useMemo(() => masterPath(events), [events])
+  // En la aprobación de Pre-production se ve el animatic del storyboard, no la pieza final.
+  const animatic = useMemo(() => { const e = [...events].reverse().find((e) => e.type === 'agent.done' && e.data.agent === 'storyboard-previs' && e.data.files?.includes('animatic.mp4')); return e ? `${e.data.stage}/storyboard-previs/v${e.data.version}/animatic.mp4` : null }, [events])
   // Agentes de etapas anteriores marcados para repetir: devolverles trabajo reabre esas etapas y cuesta más.
   const earlier = stage ? agents.filter((a) => !stage.agents.some((x) => x.id === a)).length : 0
   // La pieza final se ve aquí mismo desde que existe: en la aprobación del corte, en la entrega y al terminar.
@@ -394,6 +433,7 @@ function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onRe
     return (
       <div className="decision" role="region" aria-label="Decisión pendiente">
         {(stage.id === 'postproduction' || stage.id === 'delivery') && piece}
+        {stage.id === 'preproduction' && animatic && <div className="decision-media"><Media path={`/projects/${detail.id}/files/${animatic}`} name="animatic.mp4" /></div>}
         <div>
           <h2>{escalated ? `El auditor rechazó ${stage.name} tres veces` : `${stage.name} pasó la auditoría`}</h2>
           {escalated
@@ -448,7 +488,8 @@ function Decision({ detail, scheme, stage, events, post: postNow, onSelect, onRe
   )
   if (status === 'done') return (
     <div className="decision">{piece}<div><h2>Comercial entregado</h2><p>Las cinco etapas pasaron auditoría. Gasto total: {usd(detail.spent)}.</p></div>
-      <div className="decision-actions"><button className="primary" onClick={onReplay}>Ver repetición</button></div></div>
+      <div className="decision-actions"><button className="primary" onClick={onReplay}>Ver repetición</button></div>
+      <Improve scheme={scheme} spent={detail.spent} draft={wish} post={post} /></div>
   )
   return null
 }

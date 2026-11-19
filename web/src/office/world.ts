@@ -6,20 +6,24 @@ export type AgentT = { id: string; name: string; deliverables: string[] }
 export type StageT = { id: string; name: string; gate: string; auditor: { id: string; name: string }; agents: AgentT[] }
 export type SchemeT = { id: string; name: string; stages: StageT[] }
 
-export const W = 648
+// Cuatro columnas: las seis salas y, a la derecha, la cafetería (216 x 352).
+export const W = 864
 export const H = 352
-const RW = 216, RH = 176, LANE = 202, BOTTOM = 154
+const RW = 216, RH = 176, LANE = 202, BOTTOM = 154, CAFE_X = 648
 
 type Pt = { x: number; y: number }
 type Door = 'east' | 'south' | 'west'
 type Look = { skin: string; hair: string; style: number; shirt: string; cap?: string }
+type Chat = { a: Actor; b: Actor; lines: string[]; i: number; next: number }
+// Cabeza de cada personaje en modo libre. `rally`: 1 = quieto mirando al usuario, 2 = corriendo a su puesto.
+type Mind = { wait: number; chat: Chat | null; spot: Pt | null; cup: boolean; wave: number; hop: number; rally: 0 | 1 | 2; hold: number }
 export type Actor = {
   id: string; name: string; kind: 'agent' | 'auditor' | 'orch' | 'human'; room: Room
   seat: Pt; aisle: number; x: number; y: number
   state: 'idle' | 'working' | 'blocked'
-  bubble: { text: string; until: number; bad: boolean } | null
+  bubble: { text: string; until: number; bad: boolean; lvl?: number; dx?: number } | null
   queue: { pts: Pt[]; done?: () => void }[]
-  carrying: boolean; papers: number; look: Look; phase: number; frames: ReturnType<typeof buildFrames>
+  carrying: boolean; papers: number; look: Look; phase: number; frames: ReturnType<typeof buildFrames>; mind: Mind
 }
 type Room = { id: string; name: string; index: number; ox: number; oy: number; floor: [string, string]; accent: string; door: Door; lit: number; litTo: number; open: number; openTo: number; approved: boolean }
 
@@ -35,6 +39,45 @@ const SLOTS: { c: number; r: number; door: Door; floor: [string, string]; accent
 const SKINS = ['#f6d3b3', '#e8b58c', '#c98d5e', '#9a6844', '#6b4630']
 const HAIRS = ['#2b1d12', '#5a3a1e', '#b5762f', '#e6c46a', '#d8d8e0', '#a13d2d', '#1d2a4a']
 const INK = '#141a2b'
+// Quienes comparten el tono de piel del Creative Lead (el de la silla de Mando).
+const LEAD_SKIN = ['brand-market-research', 'character-talent-design', 'delivery', 'color', 'qc']
+
+// Modo libre. El recorrido de salas es una línea con la cafetería (-1) entre la sala 2 y la 3.
+// Las puertas están todas en la calle de su fila (y = 145 arriba, 321 abajo); cada par es [salida, entrada].
+const ORDER = [0, 1, 2, -1, 3, 4, 5]
+const GATES: Pt[][] = [
+  [{ x: 202, y: 145 }, { x: 230, y: 145 }], [{ x: 418, y: 145 }, { x: 446, y: 145 }], [{ x: 634, y: 145 }, { x: 662, y: 145 }],
+  [{ x: 662, y: 321 }, { x: 634, y: 321 }], [{ x: 446, y: 321 }, { x: 418, y: 321 }], [{ x: 230, y: 321 }, { x: 202, y: 321 }],
+]
+// Puestos de la cafetería (coordenadas locales). Las verticales que salen de cada uno a su calle quedan libres de muebles.
+const TABLES: Pt[] = [{ x: 60, y: 108 }, { x: 156, y: 108 }, { x: 60, y: 248 }, { x: 156, y: 248 }]
+const COFFEE: Pt[] = [{ x: 90, y: 62 }, { x: 108, y: 62 }, { x: 126, y: 62 }, { x: 190, y: 82 }]
+const pick = <T,>(l: T[]) => l[Math.floor(Math.random() * l.length)]
+const street = (row: number) => row * RH + 145
+const cafeStreet = (p: Pt) => (p.y < 233 ? 145 : 321)
+
+const TALKS = [
+  ['¿Viste el brief del cliente?', 'Sí. Lo quiere todo para ayer.', 'Y con el logo más grande, claro.'],
+  ['¿Cuántos cafés llevas hoy?', 'No lo cuentes, pero van cinco.', 'Ya eres director de arte.'],
+  ['Necesito una toma más limpia.', '¿Más limpia o más barata?', 'Las dos, como siempre.'],
+  ['El cliente pidió «más pop».', '¿Y qué significa «más pop»?', 'Nadie sabe. Ponle brillo.'],
+  ['¿Y esa paleta de color?', 'Atardecer, pero con actitud.', 'Me gusta. Baja un poco el azul.'],
+  ['¿Ensayamos el pitch?', 'Dame cinco minutos y un espresso.'],
+  ['Dicen que el guion está listo.', 'Lo dijeron ayer también.', 'Y anteayer.'],
+  ['Esa idea suena a premio.', 'O a reunión de tres horas.', 'Brindemos por las dos.'],
+  ['Hoy toca render, ¿no?', 'Que la GPU nos acompañe.'],
+  ['Quedó genial, no toques nada.', 'Solo un detallito…', '¡Nunca es un detallito!'],
+  ['¿Alguien vio mi taza?', 'Está en la sala de al lado.', '¡Otra vez la perdí!'],
+  ['El auditor revisa hasta las comas.', 'Por eso dormimos tranquilos.'],
+  ['¿Y la locación?', 'Un set minimalista, o sea, vacío.', 'Presupuesto bajo, arte alto.'],
+  ['Cliente nuevo en el radar.', '¿Pide algo raro?', 'Un perro que hable. Y barato.'],
+  ['¿Terminaste la toma 12?', 'La 12 va por la versión 47.', 'Y la 47 por mi tercer café.'],
+  ['Creo que el jingle pega.', 'Lo tarareé en la ducha.', 'Eso es sentencia de éxito.'],
+]
+const DESK = ['Esta toma ya casi sale', 'Ajustando la luz…', '¿Dónde dejé el guion?', 'Otro ajuste y listo', 'Este encuadre me gusta', 'Corte… y otra vez']
+const COFFEE_SAY = ['Mmm, café recién hecho', 'Combustible creativo', 'El tercero y me detengo', 'Con espuma y todo', 'Cafecito de las buenas']
+const HI = ['¡Hola!', '¿Qué tal, jefe?', '¿Me buscabas?', 'Aquí, cumpliendo', '¡Buenas! ¿Una idea?']
+const POKE = ['¡Pídeme lo que quieras!', 'Tengo un plan genial…', '¿Un café? Invito yo', 'Estoy en ello, jefe', '¡Luces, cámara…!', 'Shh, estoy concentrado']
 
 // Personajes como mapas de píxeles de 16 x 21. Cada letra es un color de la paleta del personaje.
 const HEADS = [
@@ -88,7 +131,7 @@ function hash(s: string) {
   return h >>> 0
 }
 
-export function createWorld(scheme: SchemeT, calm = false) {
+export function createWorld(scheme: SchemeT, calm = false, free = false) {
   const rooms = new Map<string, Room>()
   const actors = new Map<string, Actor>()
   let particles: { x: number; y: number; vx: number; vy: number; life: number; color: string }[] = []
@@ -100,7 +143,9 @@ export function createWorld(scheme: SchemeT, calm = false) {
   let tennisOn = false, mix = 0, game: Tennis | null = null
   const STATUE = { x: 190, y: 96 }, EXIT = { x: 6, y: 157, w: 41, h: 13 }
   const PLAYERS = ['creative-lead', 'creative-manager']
-  const world = { speed: 1, status: 'running' as string, hot: null as string | null, actors, apply, settle, reset, update, draw, actorAt, hotspot, toggleTennis }
+  // `lookId`: el personaje bajo el cursor. En modo libre se queda quieto y te saluda.
+  let lookId: string | null = null
+  const world = { speed: 1, status: 'running' as string, hot: null as string | null, actors, apply, settle, reset, update, draw, actorAt, hotspot, toggleTennis, hover, poke, rally }
 
   function addRoom(id: string, name: string, index: number) {
     const s = SLOTS[index]
@@ -110,8 +155,10 @@ export function createWorld(scheme: SchemeT, calm = false) {
   function addActor(id: string, name: string, kind: Actor['kind'], room: Room, seat: Pt, aisle: number, cap?: string) {
     const h = hash(id)
     const shirt = kind === 'auditor' ? '#2a2f3d' : kind === 'orch' ? '#f2b632' : kind === 'human' ? '#efe6d0' : room.accent
-    const look = { skin: SKINS[h % 5], hair: HAIRS[(h >>> 3) % 7], style: (h >>> 6) % 4, shirt: cap ? '#dfeaff' : shirt, cap }
-    actors.set(id, { id, name, kind, room, seat, aisle, x: seat.x, y: seat.y, state: 'idle', bubble: null, queue: [], carrying: false, papers: 0, phase: (h % 100) / 10, look, frames: buildFrames(look, kind) })
+    const skin = SKINS[(LEAD_SKIN.includes(id) ? hash('creative-lead') : h) % 5]
+    const look = { skin, hair: HAIRS[(h >>> 3) % 7], style: (h >>> 6) % 4, shirt: cap ? '#dfeaff' : shirt, cap }
+    const mind: Mind = { wait: 0, chat: null, spot: null, cup: false, wave: 0, hop: 0, rally: 0, hold: 0 }
+    actors.set(id, { id, name, kind, room, seat, aisle, x: seat.x, y: seat.y, state: 'idle', bubble: null, queue: [], carrying: false, papers: 0, phase: (h % 100) / 10, look, frames: buildFrames(look, kind), mind })
   }
   function build() {
     rooms.clear(); actors.clear()
@@ -136,9 +183,14 @@ export function createWorld(scheme: SchemeT, calm = false) {
     build(); particles = []; floats = []; stamps = []; flying = []; world.status = 'running'
   }
   build()
+  // Sin producción elegida todo está encendido y abierto, y cada quien arranca en su propio momento.
+  if (free) {
+    for (const r of rooms.values()) r.lit = r.litTo = r.open = r.openTo = 1
+    for (const a of actors.values()) { a.mind.wait = 0.4 + Math.random() * 6; a.state = Math.random() < 0.6 ? 'working' : 'idle' }
+  }
 
   const doorRect = (r: Room) => r.door === 'south' ? { x: r.ox + 172, y: r.oy + RH - 3, w: 28, h: 6 } : { x: r.ox + (r.door === 'east' ? RW - 3 : -3), y: r.oy + 130, w: 6, h: 30 }
-  const say = (a: Actor | undefined, text: string, bad = false) => { if (a) a.bubble = { text: text.length > 38 ? text.slice(0, 37) + '…' : text, until: now + 3.2, bad } }
+  const say = (a: Actor | undefined, text: string, bad = false, dur = 3.2, lvl = 0) => { if (a) a.bubble = { text: text.length > 38 ? text.slice(0, 37) + '…' : text, until: now + dur, bad, lvl } }
   function confetti(x: number, y: number, n: number, colors: string[]) {
     if (calm) return
     for (let i = 0; i < n; i++) particles.push({ x, y, vx: (Math.random() - 0.5) * 90, vy: -30 - Math.random() * 80, life: 0.8 + Math.random() * 0.8, color: colors[i % colors.length] })
@@ -157,6 +209,139 @@ export function createWorld(scheme: SchemeT, calm = false) {
     a.carrying = true
     a.queue.push({ pts: out, done: () => { a.carrying = false; target.papers++ } })
     a.queue.push({ pts: [...out.slice(0, -1).reverse(), { ...a.seat }] })
+  }
+
+  // ---------- modo libre ----------
+  /** Posición en el recorrido (0 a 6) de lo que hay bajo un punto. */
+  const where = (x: number, y: number) => {
+    const c = x >= CAFE_X ? 3 : Math.floor(x / RW), s = SLOTS.findIndex((o) => o.c === c && o.r === (y >= RH ? 1 : 0))
+    return c === 3 ? 3 : s < 3 ? s : s + 1
+  }
+  const atHome = (a: Actor) => Math.hypot(a.x - a.seat.x, a.y - a.seat.y) < 2
+  const isTennis = (a: Actor) => tennisOn && (PLAYERS.includes(a.id) || a.id === 'orchestrator')
+  const busy = (p: Pt, r = 14) => [...actors.values()].some((o) => o.mind.spot && Math.hypot(o.mind.spot.x - p.x, o.mind.spot.y - p.y) < r)
+  const cafe = (p: Pt) => ({ x: CAFE_X + p.x, y: p.y })
+  // Un tiempo de globo proporcional al texto; el siguiente que hable espera a que este termine.
+  const span = (t: string) => 1.8 + t.length * 0.045
+
+  /** Camina hasta el punto `pt` de la posición `to` del recorrido (pt null = su silla), cruzando las puertas por las calles. */
+  function go(a: Actor, to: number, pt: Pt | null, done?: () => void) {
+    const m = a.mind, from = where(a.x, a.y), pts: Pt[] = []
+    m.spot = pt; m.cup = false
+    const lane = a.room.ox + LANE, sy = street(a.room.oy ? 1 : 0)
+    if (from === 3) pts.push({ x: a.x, y: cafeStreet(a) }, { x: CAFE_X + 14, y: cafeStreet(a) })
+    else if (atHome(a)) pts.push(...route(a, { x: lane, y: sy }))
+    for (let p = from; p !== to;) {
+      const d = to > p ? 1 : -1
+      pts.push(...(d > 0 ? GATES[p] : [GATES[p - 1][1], GATES[p - 1][0]]))
+      p += d
+    }
+    if (!pt) {
+      // De vuelta a la silla: por la calle hasta el pasillo y de ahí por el mismo camino con que salió.
+      pts.push({ x: lane, y: sy }, ...route(a, { x: lane, y: sy }).reverse(), { ...a.seat })
+    } else if (to === 3) pts.push({ x: CAFE_X + 14, y: cafeStreet(pt) }, { x: pt.x, y: cafeStreet(pt) }, pt)
+    else pts.push(pt)
+    a.queue.push({ pts, done })
+  }
+  const roomPos = (a: Actor) => where(a.seat.x, a.seat.y)
+
+  /** Dos personajes se citan en un punto, conversan con un guion corto y se separan. */
+  function startChat(a: Actor) {
+    const mine = where(a.x, a.y)
+    const pool = [...actors.values()].filter((o) => o !== a && !o.mind.chat && !o.queue.length && !o.mind.rally && !isTennis(o))
+    const near = pool.filter((o) => Math.abs(where(o.x, o.y) - mine) <= 2)
+    const b = pick(near.length ? near : pool)
+    if (!b) return false
+    // En la cafetería (mostrador o mesa) o, si no, en la calle de una sala.
+    let to = 3, p: Pt, q: Pt
+    const tables = TABLES.map((t) => [cafe({ x: t.x - 14, y: t.y + 10 }), cafe({ x: t.x + 14, y: t.y + 10 })])
+    const counter = [[cafe(COFFEE[0]), cafe(COFFEE[1])], [cafe(COFFEE[1]), cafe(COFFEE[2])]]
+    const spots = [...tables, ...counter].filter(([u, v]) => !busy(u) && !busy(v))
+    if (spots.length && Math.random() < 0.6) { const pair = pick(spots); p = pair[0]; q = pair[1] }
+    else {
+      to = mine === 3 ? pick([0, 1, 2, 4, 5, 6]) : mine
+      // Lejos de otros corrillos para que los globos no se pisen (si en 6 intentos no hay hueco, se acepta el último).
+      const ox = roomOf(to).ox, y = street(to < 3 ? 0 : 1)
+      p = q = { x: 0, y }
+      for (let i = 0; i < 6 && (i === 0 || busy(p, 60) || busy(q, 60)); i++) { const x = ox + 70 + Math.random() * 70; p = { x, y }; q = { x: x + 24, y } }
+    }
+    a.mind.chat = b.mind.chat = { a, b, lines: pick(TALKS), i: 0, next: now + 0.5 }
+    go(a, to, p); go(b, to, q)
+    return true
+  }
+  const roomOf = (pos: number) => [...rooms.values()].find((r) => r.index === (pos < 3 ? pos : pos - 1))!
+  function chatTick(c: Chat) {
+    if (c.a.queue.length || c.b.queue.length || now < c.next) return
+    if (c.i >= c.lines.length) { c.a.mind.chat = c.b.mind.chat = null; c.a.mind.wait = 1 + Math.random() * 2; c.b.mind.wait = 1.5 + Math.random() * 2.5; return }
+    const text = c.lines[c.i], dur = span(text)
+    say(c.i % 2 ? c.b : c.a, text, false, dur)
+    c.i++; c.next = now + dur + 0.3
+  }
+  /** Qué hace alguien que no tiene nada pendiente: seguir en su silla, ir por café, charlar con alguien o pasear. */
+  function decide(a: Actor) {
+    const m = a.mind, home = atHome(a), r = Math.random()
+    a.state = 'idle'
+    if (home && r < 0.4) { a.state = Math.random() < 0.7 ? 'working' : 'idle'; m.wait = 3 + Math.random() * 6; if (Math.random() < 0.25) say(a, pick(DESK)); return }
+    if (!home && r < 0.3) { go(a, roomPos(a), null, () => { a.state = 'working'; m.wait = 3 + Math.random() * 6 }); return }
+    if (r < 0.72 && startChat(a)) return
+    if (r < 0.85 && !home) { const to = pick([0, 1, 2, 4, 5, 6]), x = 60 + Math.random() * 110; go(a, to, { x: roomOf(to).ox + x, y: street(to < 3 ? 0 : 1) }, () => { m.wait = 1 + Math.random() * 3 }); return }
+    // Café: mostrador, máquina expendedora; la taza sale solo al llegar.
+    const free = COFFEE.filter((s) => !busy(cafe(s))), s = pick(free.length ? free : COFFEE)
+    go(a, 3, cafe(s), () => { m.cup = true; m.wait = 4 + Math.random() * 5; if (Math.random() < 0.5) say(a, pick(COFFEE_SAY)) })
+  }
+  /** El cerebro de cada personaje, un paso por cuadro. */
+  function think(a: Actor, k: number) {
+    const m = a.mind
+    if (isTennis(a)) return
+    if (m.rally) {
+      // Quietos y mirando de frente hasta `hold`; después corren a su silla.
+      if (m.rally === 1 && now >= m.hold) { m.rally = 2; go(a, roomPos(a), null) }
+      else if (m.rally === 2 && !a.queue.length) { m.rally = 0; a.state = 'working'; m.wait = 6 + Math.random() * 8 }
+      return
+    }
+    if (m.chat) { if (m.chat.a === a) chatTick(m.chat); return }
+    if (a.queue.length || a.id === lookId) return
+    m.wait -= k
+    if (m.wait <= 0) decide(a)
+  }
+  /** El cursor pasa sobre un personaje: se detiene, te mira y saluda. */
+  function hover(id: string | null) {
+    lookId = id
+    const a = id ? actors.get(id) : null
+    if (!free || !a || a.mind.rally || isTennis(a)) return
+    a.mind.wave = now + 1.8
+    if (!a.bubble) say(a, pick(HI), false, 2.2)
+  }
+  /** Un clic: se sorprende, salta y dice algo. */
+  function poke(id: string) {
+    const a = actors.get(id)
+    if (!free || !a || a.mind.rally || isTennis(a)) return
+    a.mind.wave = now + 2.4; a.mind.hop = now + 0.35
+    say(a, pick(POKE), false, 2.6)
+  }
+  /** "Nuevo proyecto": todos se paran, miran al usuario, avisan y corren a sus puestos. */
+  function rally() {
+    if (!free) return
+    // Cada globo sube hasta el primer piso donde no pise a los ya puestos (ni su rabo): casi todos están juntos, en la cafetería.
+    const hit = (p: number[], q: number[]) => p[0] < q[2] && q[0] < p[2] && p[1] < q[3] && q[1] < p[3]
+    const placed: number[][] = []
+    for (const a of [...actors.values()].sort((p, q) => p.x - q.x)) {
+      const m = a.mind
+      if (m.chat) m.chat = null
+      if (isTennis(a)) continue
+      a.queue = []; a.state = 'idle'; m.cup = false; m.spot = null
+      m.rally = 1; m.hold = now + 1.5; m.wave = now + 1.5
+      // Prueba hasta cuatro pisos y, en cada uno, centrado o corrido a un lado; si nada cabe, se queda con el último.
+      let best = { lvl: 0, dx: 0 }, body: number[] = [], stem: number[] = []
+      search: for (let lvl = 0; lvl < 4; lvl++) for (const dx of [0, -44, 44]) {
+        const y = a.y - 38 - lvl * 14, x = Math.max(2, Math.min(W - 96, a.x - 47 + dx))
+        best = { lvl, dx }; body = [x, y, x + 94, y + 13]; stem = [a.x, y + 13, a.x + 1, a.y - 22]
+        if (!placed.some((r) => hit(r, body) || hit(r, stem))) break search
+      }
+      placed.push(body, stem)
+      say(a, '¡Listos para la acción!', false, 3.2, best.lvl)
+      a.bubble!.dx = best.dx
+    }
   }
 
   function apply(ev: Ev, animate = true) {
@@ -222,6 +407,13 @@ export function createWorld(scheme: SchemeT, calm = false) {
     tennisOn = !tennisOn
     const orch = actors.get('orchestrator')
     if (tennisOn) {
+      // En modo libre los jugadores pueden andar por ahí: vuelven a su silla y cancelan lo que tuvieran a medias.
+      for (const id of [...PLAYERS, 'orchestrator']) {
+        const a = actors.get(id)
+        if (!a) continue
+        if (a.mind.chat) a.mind.chat.a.mind.chat = a.mind.chat.b.mind.chat = null
+        a.queue = []; a.x = a.seat.x; a.y = a.seat.y; a.mind.rally = 0; a.mind.spot = null
+      }
       game = createTennis(PLAYERS.map((id) => { const a = actors.get(id)!; return { x: a.x, y: a.y } }), {
         call: (text) => say(actors.get('orchestrator'), text),
         burst: (x, y, n) => confetti(x, y, n, ['#f2b632', '#efe6d0', '#e9f24a']),
@@ -260,7 +452,9 @@ export function createWorld(scheme: SchemeT, calm = false) {
     for (const r of rooms.values()) { r.lit += (r.litTo - r.lit) * Math.min(1, k * 3); r.open += (r.openTo - r.open) * Math.min(1, k * 4) }
     for (const a of actors.values()) {
       if (a.bubble && a.bubble.until < now) a.bubble = null
-      let left = 46 * k
+      if (free) think(a, k)
+      // Quien tiene el cursor encima se detiene a mirarte; quien corre a su puesto va al doble.
+      let left = free && a.id === lookId ? 0 : 46 * k * (a.mind.rally === 2 ? 2.2 : 1)
       while (a.queue.length && left > 0) {
         const q = a.queue[0], p = q.pts[0]
         if (!p) { q.done?.(); a.queue.shift(); continue }
@@ -349,6 +543,48 @@ export function createWorld(scheme: SchemeT, calm = false) {
     R(c, INK, lx - 1, ly - 1, 5, 5); R(c, r.approved ? '#7be29a' : '#d6453d', lx, ly, 3, 3)
   }
 
+  const CAFE_FLOOR = ['#c7a27a', '#bd986f'], CAFE_ACCENT = '#e86f6f'
+  /** La cafetería ocupa la columna de la derecha, de arriba abajo. */
+  function drawCafe(c: C, t: number) {
+    const ox = CAFE_X
+    for (let y = 34; y < H; y += 12) for (let x = 0; x < RW; x += 12) R(c, CAFE_FLOOR[((x / 12 + y / 12) | 0) % 2], ox + x, y, 12, 12)
+    // alfombra central
+    R(c, '#7a3b3b', ox + 40, 166, 136, 72); R(c, '#e8c9a0', ox + 43, 169, 130, 66); R(c, '#9a4a4a', ox + 48, 174, 120, 56)
+    R(c, '#2a3350', ox, 0, RW, 34); R(c, '#222a44', ox, 26, RW, 6); R(c, CAFE_ACCENT, ox, 32, RW, 2); R(c, 'rgba(0,0,0,.2)', ox, 34, RW, 3)
+    R(c, INK, ox, 0, RW, 3); R(c, INK, ox, 0, 3, H); R(c, INK, ox + RW - 3, 0, 3, H); R(c, INK, ox, H - 3, RW, 3)
+    c.font = '7px "Pixelify Sans", monospace'; c.textBaseline = 'top'
+    const lw = Math.ceil(c.measureText('Cafetería').width)
+    R(c, INK, ox + 8, 7, lw + 8, 12); R(c, CAFE_ACCENT, ox + 8, 18, lw + 8, 1); c.fillStyle = '#efe6d0'; c.fillText('Cafetería', ox + 12, 9)
+    // pizarra del menú
+    R(c, INK, ox + 84, 6, 58, 22); R(c, '#25382f', ox + 86, 8, 54, 18); c.fillStyle = '#efe6d0'; c.fillText('Café 24 h', ox + 92, 11)
+    R(c, '#efe6d0', ox + 92, 20, 38, 1)
+    // mostrador con la cafetera y las tazas
+    R(c, INK, ox + 18, 36, 116, 18); R(c, '#b98a5a', ox + 19, 37, 114, 6); R(c, '#8a623d', ox + 19, 43, 114, 10)
+    R(c, INK, ox + 28, 22, 20, 17); R(c, '#9aa3a8', ox + 29, 23, 18, 14); R(c, '#d6453d', ox + 31, 25, 4, 3); R(c, INK, ox + 34, 31, 8, 6)
+    if (Math.floor(t * 2) % 2) { R(c, 'rgba(255,255,255,.7)', ox + 37, 17, 1, 3); R(c, 'rgba(255,255,255,.5)', ox + 39, 14, 1, 3) }
+    for (let i = 0; i < 4; i++) { R(c, '#efe6d0', ox + 62 + i * 9, 38, 5, 4); R(c, '#6b3f1d', ox + 62 + i * 9, 38, 5, 1) }
+    R(c, '#e8b04a', ox + 104, 38, 12, 4)
+    // máquina expendedora
+    R(c, INK, ox + 184, 36, 26, 36); R(c, '#3d5a80', ox + 186, 38, 22, 32); R(c, '#0f1a30', ox + 188, 40, 14, 22)
+    for (let i = 0; i < 6; i++) R(c, ['#f2b632', '#d6453d', '#7be29a', '#6fb1ff'][i % 4], ox + 190 + (i % 3) * 4, 42 + ((i / 3) | 0) * 8, 3, 5)
+    R(c, '#f2b632', ox + 204, 44, 2, 2)
+    // mesas con su taza
+    for (const tb of TABLES) {
+      R(c, 'rgba(0,0,0,.2)', ox + tb.x - 14, tb.y + 4, 30, 4)
+      R(c, INK, ox + tb.x - 15, tb.y - 8, 30, 13); R(c, '#efe6d0', ox + tb.x - 14, tb.y - 7, 28, 10); R(c, '#b9ae93', ox + tb.x - 14, tb.y + 1, 28, 2)
+      R(c, '#d6453d', ox + tb.x - 6, tb.y - 6, 4, 3); R(c, '#6b3f1d', ox + tb.x + 4, tb.y - 5, 4, 2)
+    }
+    // plantas en las esquinas de abajo
+    for (const px of [18, 196]) { R(c, '#a8623a', ox + px - 4, 332, 9, 6); R(c, '#3f9d5a', ox + px - 6, 322, 13, 11); R(c, '#56c273', ox + px - 3, 317, 7, 7) }
+  }
+  /** Las dos puertas de la cafetería: cerradas con producción en marcha, abiertas en modo libre. */
+  function drawCafeDoors(c: C) {
+    for (const y of [130, 306]) {
+      R(c, CAFE_FLOOR[0], CAFE_X - 3, y, 6, 30)
+      if (!free) R(c, '#8a623d', CAFE_X - 3, y, 6, 30)
+    }
+  }
+
   function drawDesk(c: C, a: Actor, t: number) {
     const x = a.seat.x, y = a.seat.y, on = a.state === 'working' && !a.queue.length
     if (a.kind === 'auditor') {
@@ -367,11 +603,15 @@ export function createWorld(scheme: SchemeT, calm = false) {
   function drawActor(c: C, a: Actor, t: number, hot: boolean) {
     const walking = a.queue.length > 0, step = Math.floor(t * 8 * world.speed + a.phase) % 2
     const typing = a.state === 'working' && !walking
-    const x = Math.round(a.x), bob = (walking && step) || (typing && Math.floor(t * 5 + a.phase) % 2) ? 1 : 0, y = Math.round(a.y) - (walking ? bob : -bob)
+    const m = a.mind, hop = m.hop > now ? Math.round(Math.sin(((m.hop - now) / 0.35) * Math.PI) * 5) : 0
+    const x = Math.round(a.x), bob = (walking && step) || (typing && Math.floor(t * 5 + a.phase) % 2) ? 1 : 0, y = Math.round(a.y) - (walking ? bob : -bob) - hop
     const f = a.frames, frame = walking ? (step ? f.stepA : f.stepB) : Math.floor(t * 2 + a.phase * 7) % 17 ? f.idle : f.blink
     R(c, 'rgba(0,0,0,.28)', x - 6, Math.round(a.y) - 2, 12, 3)
     c.drawImage(frame, x - 8, y - 21)
     if (a.kind === 'auditor') { R(c, '#1a1420', x + 6, y - 11, 6, 8); R(c, '#c9a15b', x + 7, y - 10, 4, 6); R(c, '#fff', x + 8, y - 8, 2, 3) }
+    // Saluda con la mano en alto; con la taza en la otra, el café.
+    if (m.wave > now) { const w = Math.floor(t * 7) % 2; R(c, INK, x + 5, y - 18 + w, 4, 6); R(c, a.look.skin, x + 6, y - 17 + w, 2, 4) }
+    if (m.cup) { R(c, INK, x - 10, y - 11, 5, 5); R(c, '#efe6d0', x - 9, y - 10, 3, 3); R(c, '#6b3f1d', x - 9, y - 10, 3, 1); if (Math.floor(t * 3) % 2) R(c, '#ffffffaa', x - 8, y - 14, 1, 2) }
     if (a.carrying) { R(c, '#1a1420', x + 6, y - 13, 8, 9); R(c, '#fff', x + 7, y - 12, 6, 7); R(c, '#9aa3a8', x + 8, y - 10, 4, 1); R(c, '#9aa3a8', x + 8, y - 8, 4, 1) }
     if (a.state === 'blocked' && !a.bubble) { const b = Math.floor(t * 4) % 2; R(c, '#1a1420', x - 2, y - 33 - b, 4, 10); R(c, '#ff5a52', x - 1, y - 32 - b, 2, 5); R(c, '#ff5a52', x - 1, y - 26 - b, 2, 2) }
     if (hot) { const b = Math.floor(t * 4) % 2; R(c, '#f2b632', x - 3, y - 30 - b, 6, 2); R(c, '#f2b632', x - 2, y - 28 - b, 4, 1); R(c, '#f2b632', x - 1, y - 27 - b, 2, 1) }
@@ -381,8 +621,11 @@ export function createWorld(scheme: SchemeT, calm = false) {
     const b = a.bubble!
     c.font = '7px "Pixelify Sans", monospace'; c.textBaseline = 'top'
     const w = Math.ceil(c.measureText(b.text).width) + 8
-    const x = Math.max(2, Math.min(W - w - 2, Math.round(a.x - w / 2))), y = Math.max(2, Math.round(a.y) - 38)
-    R(c, INK, x - 1, y - 1, w + 2, 13); R(c, b.bad ? '#ffd9d6' : '#fffaf0', x, y, w, 11); R(c, b.bad ? '#ffd9d6' : '#fffaf0', Math.round(a.x) - 1, y + 11, 3, 2)
+    const lift = (b.lvl ?? 0) * 14, fill = b.bad ? '#ffd9d6' : '#fffaf0'
+    const x = Math.max(2, Math.min(W - w - 2, Math.round(a.x - w / 2) + (b.dx ?? 0))), y = Math.max(2, Math.round(a.y) - 38 - lift)
+    R(c, INK, x - 1, y - 1, w + 2, 13); R(c, fill, x, y, w, 11)
+    // Rabo: un piquito si el globo está pegado a quien habla; un hilo si se subió o se corrió para no pisar a otros.
+    if (lift || b.dx) R(c, INK, Math.round(a.x), y + 12, 1, 2 + lift); else R(c, fill, Math.round(a.x) - 1, y + 11, 3, 2)
     c.fillStyle = b.bad ? '#8f1d18' : INK; c.fillText(b.text, x + 4, y + 2)
   }
 
@@ -438,8 +681,10 @@ export function createWorld(scheme: SchemeT, calm = false) {
     c.save()
     if (shake > 0) c.translate(Math.round(Math.sin(t * 90) * 2), 0)
     R(c, INK, 0, 0, W, H)
+    drawCafe(c, t)
     for (const r of rooms.values()) drawRoom(c, r, t)
     for (const r of rooms.values()) drawDoor(c, r)
+    drawCafeDoors(c)
     const items: { y: number; f: () => void }[] = []
     for (const a of actors.values()) {
       if (mix >= 1 && a.room.index === 0) continue

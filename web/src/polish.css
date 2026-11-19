@@ -93,6 +93,46 @@ dialog::backdrop { background: rgba(8, 11, 20, .72); backdrop-filter: blur(5px);
 }
 
 /* El letrero ocupa altura: la oficina cede lo justo para que la decisión siga a la vista. */
-.stage-floor:has(.on-air) .office { max-width: calc((100vh - 320px) * 648 / 352); }
-.stage-floor:has(.on-air):has(.decision) .office { max-width: calc((100vh - 400px) * 648 / 352); }
+.stage-floor:has(.on-air) .office { max-width: calc((100vh - 320px) * 864 / 352); }
+.stage-floor:has(.on-air):has(.decision) .office { max-width: calc((100vh - 400px) * 864 / 352); }
 @media (max-width: 980px) { .stage-floor:has(.on-air) .office, .stage-floor:has(.on-air):has(.decision) .office { max-width: 100%; } }
+
+/* ---------------------------------------------------------------- Telegram, mejoras y opinión del cliente */
+.tg-open { display: inline-block; padding: 8px 16px; background: var(--amber); color: var(--ink); font: 17px var(--pixel); text-decoration: none; border: 2px solid var(--ink); }
+.config code { background: rgba(28, 26, 23, .1); padding: 0 4px; }
+.config .models thead th { font-size: 13px; color: #5b5547; text-align: right; }
+.config .models thead th:first-child { text-align: left; }
+.config .model-actions input { width: 7em; background: #fffaf0; border: 2px solid var(--ink); color: var(--ink); padding: 4px 8px; }
+
+.improve { flex: 1 1 100%; display: grid; gap: 10px; padding-top: 12px; border-top: 2px solid var(--ink); animation: rise-in .3s both; }
+.improve h3 { font-size: 20px; }
+.improve label { display: grid; gap: 4px; font-size: 14px; max-width: 70ch; }
+.improve textarea, .improve select, .improve input { background: #fffaf0; border: 2px solid var(--ink); color: var(--ink); padding: 6px 10px; font: 16px var(--body); }
+.improve input { width: 9em; }
+.improve .note { margin: 0; max-width: 70ch; color: #5b5547; font-size: 14px; }
+.improve-actions { display: flex; gap: 8px; margin: 0; }
+
+.client-notes { width: 100%; max-width: 1100px; background: var(--paper); color: var(--ink); padding: 14px 20px; border-left: 12px solid var(--teal); animation: rise-in .4s both; }
+.client-notes h3 { font-size: 20px; margin-bottom: 8px; }
+.client-notes ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.client-notes li { border-top: 1px solid var(--paper-line); padding-top: 10px; }
+.client-notes li p { margin: 0; }
+.client-notes blockquote { margin: 6px 0; padding-left: 12px; border-left: 4px solid var(--ink); font-size: 18px; max-width: 70ch; }
+.client-notes-actions { display: flex; gap: 8px; }
+.client-notes button { color: var(--ink); }
+.darkroom .client-notes { margin-bottom: 24px; max-width: none; }
+
+.client-voice { max-width: 720px; margin: 0 auto clamp(40px, 7vw, 88px); padding: 24px clamp(18px, 4vw, 36px); background: var(--paper); color: var(--ink); border-top: 12px solid var(--amber); display: grid; gap: 14px; }
+.client-voice h2 { font-size: 30px; }
+.client-voice label { display: grid; gap: 4px; font-size: 14px; color: #5b5547; }
+.client-voice input, .client-voice textarea { background: #fffaf0; border: 2px solid var(--ink); color: var(--ink); padding: 8px 10px; font: 17px var(--body); }
+.client-voice-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 0; }
+.client-voice button { color: var(--ink); }
+.client-voice-done { margin: 0; font-size: 19px; }
+.client-voice-error { margin: 0; color: #a3261f; font-weight: 700; }
+@media print { .client-voice { display: none; } }
+
+.tg-qr { display: block; width: 220px; max-width: 100%; height: auto; border: 2px solid var(--ink); image-rendering: pixelated; }
+.tg-waiting::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 8px; background: var(--amber); animation: tg-blink 1s steps(2) infinite; }
+@keyframes tg-blink { 50% { opacity: 0.2; } }
+@media (prefers-reduced-motion: reduce) { .tg-waiting::before { animation: none; } }

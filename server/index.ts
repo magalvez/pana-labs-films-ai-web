@@ -12,6 +12,10 @@ import { claudeReporter } from './report.ts'
 import { claudeExplorer, simExplorer } from './explore.ts'
 import { supabaseDb } from './store.ts'
 import { createUsers, type Role } from './users.ts'
+import { createTelegram, type Telegram } from './telegram.ts'
+import { existsSync } from 'node:fs'
+import { serveStatic } from '@hono/node-server/serve-static'
+import { createFinance } from './finance.ts'
 
 const REQUIRED = ['DATABASE_URL', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'ALLOWED_EMAILS']
 const missing = REQUIRED.filter((key) => !process.env[key])
@@ -38,6 +42,7 @@ const engine: Engine = createEngine({
   files: supabaseFiles(supabase),
   schemes: { commercial },
   reporter: claudeReporter(),
+  onEvent: (projectId, type, data) => void notice(projectId, type, data).catch((err) => console.error(`No se pudo enviar un aviso: ${err.message}`)),
   explorer: {
     suggest: (i) => (i.project.simulation ? explorers.sim : explorers.real).suggest(i),
     image: (o) => (o.project.simulation ? explorers.sim : explorers.real).image(o),
@@ -71,9 +76,36 @@ const users = createUsers({
   },
 })
 
+const usd = (n: number) => `$${n.toFixed(2)}`
+/** El botón de un aviso viejo no decide una etapa posterior que nadie ha revisado. */
+async function stillWaiting(projectId: string, stage: string) {
+  const p = await engine.getProject(projectId)
+  if (p.status !== 'waiting_human' || p.currentStage !== stage) throw new Error('ese aviso ya no vale: la etapa se decidió o el proyecto avanzó. Mira el aviso más reciente o entra al estudio.')
+}
+const telegram: Telegram = createTelegram({
+  db, token: env.TELEGRAM_BOT_TOKEN, username: env.TELEGRAM_BOT_USERNAME, roleOf: (email) => users.roleOf(email),
+  approve: async (projectId, stage) => { await stillWaiting(projectId, stage); await engine.decide(projectId, { approve: true }); return `Aprobada. «${(await engine.getProject(projectId)).name}» sigue adelante.` },
+  sendBack: async (projectId, stage, _email, comment) => { await stillWaiting(projectId, stage); await engine.decide(projectId, { approve: false, comment }); return 'Devuelta a toda la etapa con tu indicación.' },
+})
+/** Lo que merece un aviso fuera de la app: una decisión pendiente, el tope alcanzado, un fallo, la entrega y la opinión del cliente. */
+async function notice(projectId: string, type: string, data: Record<string, any>) {
+  const status = type === 'project.status' ? data.status : null
+  if (type !== 'client.feedback' && !['waiting_human', 'done', 'failed'].includes(status) && !(status === 'paused' && data.reason === 'budget')) return
+  const p = await engine.getProject(projectId)
+  const stage = engine.schemes[p.scheme].stages.find((s) => s.id === p.currentStage)?.name ?? 'La etapa'
+  const money = `Gastado ${usd(p.spent)} de ${usd(p.budget_cap)}.`
+  if (type === 'client.feedback') return telegram.notify(`«${p.name}»: ${data.name || 'el cliente'} ${data.kind === 'approve' ? 'aprobó' : 'comentó'} ${data.about === 'moodboard' ? 'el moodboard' : 'la pieza'}${data.text ? `: «${data.text}»` : '.'}`)
+  if (status === 'waiting_human') return telegram.notify(`«${p.name}»: ${stage} ${data.reason === 'escalated' ? 'fue rechazada varias veces por el auditor y necesita tu decisión' : 'pasó la auditoría y espera tu aprobación'}. ${money}`, projectId, p.currentStage ?? undefined)
+  if (status === 'paused') return telegram.notify(`«${p.name}» se pausó: alcanzó el tope de presupuesto. ${money} Sube el tope desde el estudio para seguir.`)
+  if (status === 'failed') return telegram.notify(`«${p.name}» se detuvo: ${data.reason ?? 'error sin detalle'}`)
+  return telegram.notify(`«${p.name}» está entregado. ${money}`)
+}
+
 const app = createApp({
   engine,
+  telegram,
   users,
+  finance: createFinance(db),
   publicConfig: { supabaseUrl: env.SUPABASE_URL, supabaseAnonKey: env.SUPABASE_ANON_KEY },
   auth: async (token) => {
     const hit = sessions.get(token)
@@ -101,6 +133,14 @@ try {
   process.exit(1)
 }
 const port = Number(env.PORT ?? 8787)
-serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => console.log(`Pana Films Lab en http://127.0.0.1:${port}`))
+// Desplegado, el mismo servidor entrega la web ya compilada (`npm run build`). En desarrollo la sirve Vite.
+if (existsSync('dist/index.html')) {
+  app.use('/*', serveStatic({ root: './dist' }))
+  app.get('*', (c, next) => (c.req.path.startsWith('/api/') ? next() : serveStatic({ path: './dist/index.html' })(c, next)))
+}
+// Solo escucha en esta máquina salvo que el despliegue pida otra cosa con HOST.
+const hostname = env.HOST ?? '127.0.0.1'
+serve({ fetch: app.fetch, port, hostname }, () => console.log(`Pana Films Lab en http://${hostname}:${port}`))
+void telegram.start()
 // Los proyectos que estaban en marcha se retoman con la API ya arriba: pueden tardar horas y hay que poder pausarlos.
 engine.resumeAll().catch((err) => console.error('No se pudieron retomar los proyectos en marcha:', err))

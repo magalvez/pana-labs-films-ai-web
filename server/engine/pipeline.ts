@@ -7,8 +7,8 @@ import { brandDir, readReferences, type AgentDef, type Asset, type Brand, type D
 
 export type Board = { id: string; title: string; prompt: string; note: string; aspect: Aspect; withProduct: boolean; images: { file: string; selected: boolean }[] }
 export type Exploration = { idea: string; boards: Board[] }
-export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number; imageModel: string; videoModel: string }
-const DEFAULTS: Settings = { humanReview: true, simulation: true, models: {}, maxAuditRetries: 2, textTimeoutMin: 15, mediaTimeoutMin: 60, defaultBudget: 50, imageModel: DEFAULT_IMAGE, videoModel: DEFAULT_VIDEO }
+export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number; imageModel: string; videoModel: string; parallelAgents: boolean }
+const DEFAULTS: Settings = { humanReview: true, simulation: true, models: {}, maxAuditRetries: 2, textTimeoutMin: 15, mediaTimeoutMin: 60, defaultBudget: 50, imageModel: DEFAULT_IMAGE, videoModel: DEFAULT_VIDEO, parallelAgents: false }
 
 type StepRow = { stage: string; agent: string; version: number; status: 'done' | 'rejected'; feedback: string | null; model: string | null }
 type StageRow = { stage: string; status: 'working' | 'audited' | 'escalated' | 'approved'; attempts: number }
@@ -46,6 +46,8 @@ export function createEngine(opts: {
   reporter?: Reporter
   /** Quien propone y genera las opciones de la exploración. Sin él, los proyectos arrancan directo. */
   explorer?: Explorer
+  /** Se llama con cada evento ya guardado, para los avisos fuera de la app. Un fallo aquí no afecta al motor. */
+  onEvent?: (projectId: string, type: string, data: Record<string, any>) => void
 }) {
   const { db, files, schemes, runner } = opts
   // El proyecto tal como lo ve el agente que está corriendo: subir el tope a mitad de trabajo se refleja aquí.
@@ -66,7 +68,7 @@ export function createEngine(opts: {
     const ts = now()
     const next = (queues.get(projectId) ?? Promise.resolve()).catch(() => {}).then(() => db('INSERT INTO events (project_id, ts, type, data) VALUES (?,?,?,?)', projectId, ts, type, JSON.stringify(data)))
     queues.set(projectId, next)
-    return next.then(() => {})
+    return next.then(() => { try { opts.onEvent?.(projectId, type, data) } catch { /* un aviso que falla no detiene nada */ } })
   }
   /** Lo que un agente dice en la oficina es accesorio: si no se puede guardar, el trabajo sigue. */
   const chatter = (projectId: string, stage: string, agent: string, text: string) => void emit(projectId, 'agent.message', { stage, agent, text }).catch(() => {})
@@ -78,7 +80,7 @@ export function createEngine(opts: {
 
   async function getSettings(): Promise<Settings> {
     const rows = await db('SELECT key, value FROM settings')
-    return { ...DEFAULTS, maxAuditRetries, ...Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)])) }
+    return { ...DEFAULTS, maxAuditRetries, ...Object.fromEntries(rows.filter((r) => Object.hasOwn(DEFAULTS, r.key)).map((r) => [r.key, JSON.parse(r.value)])) }
   }
 
   /** `models` llega por agente y se fusiona con lo guardado: `null` o el modelo por defecto quitan la elección. */
@@ -87,7 +89,7 @@ export function createEngine(opts: {
     const whole = (min: number, max: number) => (v: unknown) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max
     const known = new Set(Object.values(schemes).flatMap((s) => s.stages.flatMap((st) => [...st.agents, st.auditor].map((a) => a.id))))
     const valid: Record<keyof Settings, (v: unknown) => boolean> = {
-      humanReview: flag, simulation: flag,
+      humanReview: flag, simulation: flag, parallelAgents: flag,
       models: (v) => Boolean(v) && typeof v === 'object' && !Array.isArray(v) && Object.entries(v as object).every(([agent, model]) => known.has(agent) && (model === null || (typeof model === 'string' && Object.hasOwn(MODELS, model)))),
       maxAuditRetries: whole(0, 5), textTimeoutMin: whole(5, 60), mediaTimeoutMin: whole(15, 180), defaultBudget: whole(1, 10_000),
       imageModel: (v) => typeof v === 'string' && Object.hasOwn(IMAGE_MODELS, v), videoModel: (v) => typeof v === 'string' && Object.hasOwn(VIDEO_MODELS, v),
@@ -181,6 +183,9 @@ export function createEngine(opts: {
 
   async function addCost(id: string, stage: string, agent: string, usd: number, use?: Usage) {
     if (!(usd > 0)) return
+    // El proyecto que ven los agentes en curso refleja el gasto al instante: en paralelo, cada uno ve lo que gastan los demás.
+    const running = live.get(id)
+    if (running) running.spent += usd
     await db('UPDATE projects SET spent = spent + ? WHERE id = ?', usd, id)
     await emit(id, 'cost', { stage, agent, usd, spent: (await project(id)).spent, ...(use ? { tokens: use, tokensUsd: usdByKind(use) } : {}) })
   }
@@ -240,7 +245,8 @@ export function createEngine(opts: {
     const resumed = await prepareDir(p.id, stage.id, agent.id, version, dir)
     for (let attempt = 0; ; attempt++) {
       // El gasto se relee en cada intento: el anterior pudo consumir casi todo el tope.
-      const fresh = attempt === 0 ? p : await project(p.id)
+      // Se actualiza el mismo objeto, no uno nuevo: es el que comparten los agentes que corren a la vez.
+      const fresh = attempt === 0 ? p : Object.assign(p, await project(p.id))
       if (fresh.spent >= fresh.budget_cap) return false
       await emit(p.id, 'agent.started', { stage: stage.id, agent: agent.id, version, feedback })
       live.set(p.id, fresh)
@@ -319,6 +325,8 @@ export function createEngine(opts: {
   /** Avanza desde el estado guardado hasta terminar o necesitar a una persona. */
   async function loop(id: string) {
     const scheme = schemes[(await project(id)).scheme]
+    // Una mejora pedida sobre la pieza entregada reabre etapas antes de recorrerlas.
+    await planImprovement(id, scheme)
     // Las etapas ya aprobadas se saltan con una sola consulta: cada ida a la base cuesta una vuelta de red.
     const approved = new Set((await db("SELECT stage FROM stages WHERE project_id = ? AND status = 'approved'", id)).map((r) => r.stage))
     for (const stage of scheme.stages) {
@@ -329,12 +337,21 @@ export function createEngine(opts: {
         const row = await stageRow(id, stage)
         if (row.status === 'approved') break
         if (row.status === 'working') {
-          // ponytail: agentes en secuencia; paralelizar exige declarar dependencias entre agentes en el esquema.
           const latest = await latestSteps(id)
-          const pending = stage.agents.find((a) => latest.get(`${stage.id}/${a.id}`)?.status !== 'done')
+          const waiting = (a: AgentDef) => latest.get(`${stage.id}/${a.id}`)?.status !== 'done'
+          const pending = stage.agents.find(waiting)
           // El tope se comprueba antes de cada agente, de cada reintento y de cada auditoría.
           if (p.spent >= p.budget_cap) return pauseIfRunning(id, 'budget')
-          if (pending) { if (!(await runStep(p, scheme, stage, pending, latest))) return pauseIfRunning(id, 'budget') }
+          if (pending) {
+            // Con el trabajo en paralelo activado, corren a la vez los agentes que el esquema marca como independientes del anterior.
+            // ponytail: el tope se comprueba antes de cada generación con el gasto de todos; dos que se lancen en el mismo instante pueden pasarlo por el costo de una.
+            const wave = [pending]
+            if ((await getSettings()).parallelAgents) for (let i = stage.agents.indexOf(pending) + 1; stage.agents[i]?.alongside; i++) if (waiting(stage.agents[i])) wave.push(stage.agents[i])
+            const runs = await Promise.allSettled(wave.map((a) => runStep(p, scheme, stage, a, latest)))
+            const failed = runs.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined
+            if (failed) throw failed.reason
+            if (runs.some((r) => r.status === 'fulfilled' && !r.value)) return pauseIfRunning(id, 'budget')
+          }
           else await audit(p, scheme, stage, row, latest)
         } else if (row.status === 'audited' && !(await getSettings()).humanReview) {
           await setStage(id, stage.id, 'approved')
@@ -407,11 +424,12 @@ export function createEngine(opts: {
     return refs
   }
 
-  async function createProject(input: { name: string; brief: string; budgetCap: number; explore?: boolean; scheme?: string; brand?: { name: string; kit: string }; references?: { bytes: Uint8Array; ext: string; contentType: string; note: string }[] }) {
+  async function createProject(input: { name: string; brief: string; budgetCap: number; explore?: boolean; templateId?: string; scheme?: string; brand?: { name: string; kit: string }; references?: { bytes: Uint8Array; ext: string; contentType: string; note: string }[] }) {
     const scheme = input.scheme ?? 'commercial'
     if (!schemes[scheme]) throw new Error(`Esquema desconocido: ${scheme}`)
     // La biblioteca de marca se guarda por cliente y se reutiliza en sus siguientes proyectos.
     if (input.brand) await db('INSERT INTO brands (name, kit) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET kit = excluded.kit', input.brand.name, input.brand.kit)
+    if (input.templateId) await project(input.templateId)
     const id = `p_${randomUUID().slice(0, 8)}`
     // Con exploración el proyecto espera: nada corre ni gasta hasta que una persona pulse "Iniciar producción".
     const status: Project['status'] = input.explore && opts.explorer ? 'exploring' : 'running'
@@ -420,6 +438,11 @@ export function createEngine(opts: {
     await db('INSERT INTO projects (id, name, brief, scheme, brand, status, budget_cap, created_at, simulation) VALUES (?,?,?,?,?,?,?,?,?)', id, input.name, input.brief, scheme, input.brand?.name ?? null, status, input.budgetCap, now(), simulation)
     // Las referencias se guardan antes de arrancar: el primer agente de la primera etapa ya las recibe.
     for (const r of input.references ?? []) await addReference(id, r.bytes, r.ext, r.contentType, r.note, '')
+    // Partir de una producción anterior: sus referencias (el look ya aprobado) pasan a la nueva, hasta donde quepan.
+    if (input.templateId) for (const r of (await readReferences(files, input.templateId)).slice(0, MAX_REFERENCES - (input.references?.length ?? 0))) {
+      const bytes = await files.readBytes(`${input.templateId}/${r.file}`)
+      if (bytes) await addReference(id, bytes, r.file.slice(r.file.lastIndexOf('.')), r.file.endsWith('.png') ? 'image/png' : 'image/jpeg', r.note, '')
+    }
     await emit(id, 'project.status', { status, reason: null })
     if (status === 'running') kick(id)
     return project(id)
@@ -658,9 +681,10 @@ export function createEngine(opts: {
     for (const a of await db('SELECT DISTINCT path FROM assets WHERE project_id = ?', id)) dirs.add(`${id}/${a.path.split('/').slice(0, -1).join('/')}`)
     dirs.add(`${id}/client`)
     dirs.add(`${id}/referencias`)
+    dirs.add(`${id}/mejoras`)
     dirs.add(`${id}/${EXPLORE}`)
     for (const dir of dirs) await files.removeDir(dir)
-    for (const table of ['shares', 'assets', 'events', 'steps', 'stages']) await db(`DELETE FROM ${table} WHERE project_id = ?`, id)
+    for (const table of ['shares', 'assets', 'events', 'steps', 'stages', 'finance_entries']) await db(`DELETE FROM ${table} WHERE project_id = ?`, id)
     await db('DELETE FROM projects WHERE id = ?', id)
     queues.delete(id)
   }
@@ -876,6 +900,103 @@ export function createEngine(opts: {
     return { token, expiresAt: expires }
   }
 
+  // ---------------------------------------------------------------- Mejoras tras la entrega
+
+  const IMPROVE = 'mejoras/pendiente.json'
+  /**
+   * Una persona pide una mejora al auditor de una etapa con la pieza ya entregada. El pedido queda guardado y el
+   * recorrido lo atiende al arrancar: así sobrevive a un reinicio del servidor. El tope sube en lo que se autorice gastar.
+   */
+  async function requestImprovement(id: string, stageId: string, text: string, extraBudget: number, by: string) {
+    const p = await project(id)
+    if (!schemes[p.scheme].stages.some((s) => s.id === stageId)) throw new Error('Esa etapa no existe')
+    if (text.trim().length < 10) throw new Error('Describe la mejora con más detalle')
+    if (!(extraBudget > 0 && extraBudget <= 10_000)) throw new Error('Indica cuánto se puede gastar en esta mejora, entre 1 y 10 000 dólares')
+    if (p.status !== 'done') throw new Error('Las mejoras se piden sobre una producción ya entregada')
+    // Primero queda escrito el pedido y subido el tope; el cambio de estado va al final y, si no entra, se deshace todo.
+    await files.write(`${id}/${IMPROVE}`, JSON.stringify({ stage: stageId, text: text.trim(), by, at: now() }))
+    await db('UPDATE projects SET budget_cap = budget_cap + ? WHERE id = ?', extraBudget, id)
+    if (!(await move(id, 'done', 'running'))) {
+      await db('UPDATE projects SET budget_cap = budget_cap - ? WHERE id = ?', extraBudget, id)
+      await files.write(`${id}/${IMPROVE}`, '{}')
+      throw new Error('Las mejoras se piden sobre una producción ya entregada')
+    }
+    await emit(id, 'improvement.requested', { stage: stageId, text: text.trim(), budget: extraBudget, by })
+    kick(id)
+  }
+
+  /** El auditor de la etapa reparte la mejora entre sus agentes; lo que venga después se actualiza y vuelve a pasar por auditoría y aprobación. */
+  async function planImprovement(id: string, scheme: Scheme) {
+    const raw = await files.read(`${id}/${IMPROVE}`)
+    const req = raw ? JSON.parse(raw) : null
+    if (!req?.text) return
+    const stage = scheme.stages.find((s) => s.id === req.stage)
+    const p = await project(id)
+    if (p.status !== 'running') return
+    if (stage) {
+      const auditor = stage.auditor.id
+      const [latest, cfg] = await Promise.all([latestSteps(id), getSettings()])
+      await emit(id, 'audit.started', { stage: stage.id, auditor })
+      live.set(id, p)
+      const verdict = await runner.runAuditor({
+        project: p, stage, files, brand: await brandOf(p), request: req.text,
+        model: cfg.models[auditor], timeoutMs: cfg.mediaTimeoutMin * 60_000,
+        deliverables: inputsFor(id, latest, scheme, stage).filter((i) => i.stage === stage.id),
+        say: (text) => chatter(id, stage.id, auditor, text),
+        assets: () => listAssets(id),
+        spend: (usd, use) => addCost(id, stage.id, auditor, usd, use),
+        signal: aborts.get(id)!.signal,
+      })
+      await addCost(id, stage.id, auditor, verdict.costUsd)
+      // Sin reparto (en simulación, o si el auditor no señaló a nadie), la mejora va a toda la etapa.
+      const known = verdict.issues.filter((i) => stage.agents.some((a) => a.id === i.agent))
+      const issues = known.length ? known : stage.agents.map((a) => ({ agent: a.id, problem: req.text as string }))
+      const name = (agent: string) => stage.agents.find((a) => a.id === agent)!.name
+      // No es un rechazo: el auditor cierra su parte y el trabajo vuelve a sus agentes.
+      await emit(id, 'audit.verdict', { stage: stage.id, auditor, approved: true, issues: [], attempt: 1, improvement: true })
+      await emit(id, 'improvement.planned', { stage: stage.id, issues })
+      await returnWork(id, scheme, scheme.stages.at(-1)!, [...new Set(issues.map((i) => i.agent))],
+        `Mejora pedida por la persona sobre la pieza ya entregada: ${req.text}\nReparto del ${stage.auditor.name}:\n${issues.map((i) => `- ${name(i.agent)}: ${i.problem}`).join('\n')}\nSi tu nombre aparece en el reparto, haz lo que te toca; lo demás de tu entrega se conserva.`)
+    }
+    await files.write(`${id}/${IMPROVE}`, '{}')
+  }
+
+  // ---------------------------------------------------------------- Opinión del cliente
+
+  const FEEDBACK = 'client/comentarios.json'
+  type ClientNote = { id: string; at: string; kind: 'approve' | 'comment'; about: 'moodboard' | 'pieza'; target: string; name: string; text: string; status: 'new' | 'used' | 'dismissed' }
+  const listClientFeedback = async (id: string): Promise<ClientNote[]> => JSON.parse((await files.read(`${id}/${FEEDBACK}`)) || '[]')
+
+  /** Lo que el cliente aprueba o comenta desde su enlace. Queda pendiente: una persona del estudio decide qué hacer con ello. */
+  async function addClientFeedback(token: string, input: { kind?: unknown; target?: unknown; text?: unknown; name?: unknown }) {
+    const share = await openShare(token)
+    if (!share) return null
+    const kind = input.kind === 'approve' ? 'approve' : 'comment'
+    const text = clean(input.text, 1000)
+    if (kind === 'comment' && text.length < 3) throw new Error('Escribe tu comentario antes de enviarlo')
+    const note: ClientNote = { id: randomBytes(6).toString('hex'), at: now(), kind, about: token.startsWith(MOOD) ? 'moodboard' : 'pieza', target: clean(input.target, 80), name: clean(input.name, 60), text, status: 'new' }
+    await inLine(share.projectId, async () => {
+      const list = await listClientFeedback(share.projectId)
+      // Un enlace público no puede llenar el almacenamiento.
+      if (list.length >= 200) throw new Error('Esta producción ya tiene muchos comentarios. Escríbele directamente a tu contacto en Pana Films.')
+      await files.write(`${share.projectId}/${FEEDBACK}`, JSON.stringify([...list, note]))
+    })
+    await emit(share.projectId, 'client.feedback', { kind, about: note.about, target: note.target, name: note.name, text })
+    return { ok: true }
+  }
+
+  async function resolveClientFeedback(id: string, noteId: string, status: unknown) {
+    if (status !== 'used' && status !== 'dismissed') throw new Error('Un comentario se marca como usado o como descartado')
+    return inLine(id, async () => {
+      const list = await listClientFeedback(id)
+      const note = list.find((n) => n.id === noteId)
+      if (!note) throw new Error('Ese comentario ya no existe')
+      note.status = status
+      await files.write(`${id}/${FEEDBACK}`, JSON.stringify(list))
+      return list
+    })
+  }
+
   /** Enlace de solo lectura para un cliente. El secreto va en el enlace; no hay otra forma de llegar a la vista previa. */
   async function createShare(id: string, by: string, days = 14) {
     const p = await project(id)
@@ -909,7 +1030,7 @@ export function createEngine(opts: {
     return { ...head, report: await clientReport(p.id), videos: await clientVideos(p.id), moodboard: { idea: '', boards: [], paths: {} as Record<string, string> } }
   }
 
-  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listReferences, addReference, getExploration, suggestExploration, saveExploration, generateExploration, selectExploration, startProduction, shareMoodboard, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
+  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listReferences, addReference, getExploration, suggestExploration, saveExploration, generateExploration, selectExploration, startProduction, shareMoodboard, requestImprovement, addClientFeedback, listClientFeedback, resolveClientFeedback, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
 }
 
 export type Engine = ReturnType<typeof createEngine>

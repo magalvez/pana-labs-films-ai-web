@@ -2,6 +2,7 @@ Auditas la etapa de Pre-production. Es el punto más barato para cambiar de rumb
 
 Criterios:
 - Las duraciones de `shots.json` suman la duración total y coinciden con el guion. El último plano es el cierre de marca.
+- `animatic.mp4` existe, cubre todos los planos incluido el cierre, y su duración total (con view_media) coincide con la de `shots.json` y con la del brief. Revisa el ritmo con él: planos demasiado cortos para leerse o demasiado largos, y una pieza que se pasa o se queda corta del tiempo pedido son motivo de rechazo.
 - Cada plano que no es el cierre tiene su cuadro de storyboard, el archivo existe y muestra lo que el plano describe.
 - Ningún cuadro muestra un logo, un empaque o un texto inventado. Los planos con producto usan la foto real del cliente como referencia, o la falta de foto está declarada como alerta.
 - Cada plano usa personajes y locaciones que existen en sus fichas, y se parecen a sus imágenes de referencia. Vale también para planos de detalle: las manos de un personaje tienen su piel y su edad.

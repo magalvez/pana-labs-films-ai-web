@@ -7,7 +7,7 @@ import * as eleven from '../media/eleven.ts'
 import * as fal from '../media/fal.ts'
 import { MAX_REVIEW_BYTES, reviewAvailable, reviewEstimateUsd, reviewVideo } from '../media/gemini.ts'
 import * as ff from '../media/ffmpeg.ts'
-import { MODELS, imageModel, videoModel } from '../media/prices.ts'
+import { MODELS, durationsText, imageModel, lipSyncUsd, videoModel } from '../media/prices.ts'
 import { renderEndCard, renderSuper } from '../media/remotion.ts'
 import { brandDir, type Asset, type Brand, type Files, type Measurements, type NewAsset, type ToolFamily } from './types.ts'
 
@@ -211,20 +211,78 @@ export function mediaTools(ctx: ToolContext) {
     return paid(imageModel(ctx.imageModel).usdPerImage, tmp, name, () => fal.generateImage({ prompt: input.prompt, aspect: input.aspect, referenceUrls, model: ctx.imageModel }), { tool: 'generate_image', provider: 'fal.ai', prompt: input.prompt, inputs: input.reference_files, license: FAL_LICENSE })
   }))
 
-  if (has('video')) tools.push(tool('generate_video', `Anima una imagen de partida y produce un clip sin audio. \`final\` es la toma que va al comercial (${videoModel(ctx.videoModel).usdPerSecond} USD por segundo, ${videoModel(ctx.videoModel).durations.join(' o ')} s). \`draft\` es una prueba en baja resolución (${MODELS.draft.usdPerSecond} USD por segundo, 5, 8 o 10 s) para comprobar un movimiento arriesgado antes de pagar la final. El encuadre lo define la imagen de partida.`, z.object({
-    prompt: z.string().min(10).describe('Qué ocurre en el plano y cómo se mueve la cámara. En inglés rinde mejor.'),
+  if (has('video')) tools.push(tool('generate_video', `Anima una imagen de partida y produce un clip sin audio. \`final\` es la toma que va al comercial (${videoModel(ctx.videoModel).usdPerSecond} USD por segundo, ${videoModel(ctx.videoModel).durations.length > 2 ? 'duración libre' : 'clips'} de ${durationsText(videoModel(ctx.videoModel).durations)} s${videoModel(ctx.videoModel).durations.length > 2 ? ': pide lo que dura el plano, sin pagar segundos que se recortarán' : ''}). \`draft\` es una prueba en baja resolución (${MODELS.draft.usdPerSecond} USD por segundo, 5, 8 o 10 s) para comprobar un movimiento arriesgado antes de pagar la final. El encuadre lo define la imagen de partida. ${videoModel(ctx.videoModel).elements ? '`elements` mantiene al personaje o al producto idénticos en toda la toma: cada elemento es una imagen frontal y otras vistas; en el prompt se citan como @Element1, @Element2, en el orden de la lista.' : 'El modelo elegido NO admite `elements` (personajes de referencia): se ignoran.'}`, z.object({
+    prompt: z.string().min(10).describe('Qué ocurre en el plano y cómo se mueve la cámara. En inglés rinde mejor. Con `elements`, cita cada uno como @Element1, @Element2.'),
     image_file: path.describe('Imagen de partida: el cuadro del storyboard de ese plano.'),
-    duration_seconds: z.number(),
+    duration_seconds: z.number().describe('Duración del clip, entera. Con Kling 3.0 de 3 a 10 s; con Kling 2.6, 5 o 10 s.'),
     quality: z.enum(['draft', 'final']),
     negative_prompt: z.string().optional(),
+    elements: z.array(z.object({
+      frontal_file: path.describe('Imagen frontal y nítida del personaje o del objeto, por ejemplo character-ana.jpg o brand/producto.png.'),
+      reference_files: z.array(path).max(3).default([]).describe('Otras vistas del mismo personaje u objeto.'),
+    })).max(3).default([]).describe('Personajes y objetos que deben conservarse. Solo con Kling 3.0 y calidad final.'),
     filename: z.string().describe('Nombre de salida terminado en .mp4, por ejemplo S01-t1.mp4.'),
   }), async (input, tmp) => {
     const name = output(input.filename, '.mp4')
     const m = input.quality === 'final' ? videoModel(ctx.videoModel) : MODELS.draft
-    if (!(m.durations as readonly number[]).includes(input.duration_seconds)) throw new Error(`con calidad ${input.quality} la duración debe ser ${m.durations.join(' o ')} segundos; el sobrante se recorta en el montaje`)
+    if (!(m.durations as readonly number[]).includes(input.duration_seconds)) throw new Error(`con calidad ${input.quality} y este modelo la duración debe ser ${durationsText(m.durations)} segundos${durationsText(m.durations).startsWith('de ') ? ' (enteros)' : ''}; el sobrante se recorta en el montaje`)
     if (kindOf(input.image_file) !== 'image') throw new Error('image_file debe ser una imagen')
+    const files = input.elements.flatMap((e) => [e.frontal_file, ...e.reference_files])
+    if (files.some((f) => kindOf(f) !== 'image')) throw new Error('los elementos deben ser imágenes')
+    const useElements = input.elements.length > 0 && input.quality === 'final' && videoModel(ctx.videoModel).elements
+    // ponytail: sin soporte, se genera igual y se avisa; el agente decide si repite con otro cuadro de partida. Elementos de más de 3 imágenes por personaje no probados.
+    const warning = input.elements.length > 0 && !useElements ? `\nAviso: ${input.quality === 'draft' ? 'la prueba (draft)' : `${videoModel(ctx.videoModel).name}`} no admite \`elements\`: se ignoraron los ${input.elements.length} elementos y el personaje depende solo de la imagen de partida. Para fijarlo, elige Kling 3.0 en la configuración o corrige el cuadro de partida con generate_image.` : ''
     const imageUrl = await ctx.files.url(resolve(input.image_file))
-    return paid(m.usdPerSecond * input.duration_seconds, tmp, name, () => fal.generateVideo({ prompt: input.prompt, imageUrl, durationSeconds: input.duration_seconds, quality: input.quality, negativePrompt: input.negative_prompt, model: ctx.videoModel }), { tool: `generate_video (${input.quality})`, provider: 'fal.ai', prompt: input.prompt, inputs: [input.image_file], license: FAL_LICENSE })
+    const elements = useElements ? await Promise.all(input.elements.map(async (e) => ({ frontal: await ctx.files.url(resolve(e.frontal_file)), references: await Promise.all(e.reference_files.map((p) => ctx.files.url(resolve(p)))) }))) : undefined
+    const result = await paid(m.usdPerSecond * input.duration_seconds, tmp, name, () => fal.generateVideo({ prompt: input.prompt, imageUrl, durationSeconds: input.duration_seconds, quality: input.quality, negativePrompt: input.negative_prompt, model: ctx.videoModel, elements }), { tool: `generate_video (${input.quality})`, provider: 'fal.ai', prompt: input.prompt, inputs: [input.image_file, ...(useElements ? files : [])], license: FAL_LICENSE })
+    return result + warning
+  }))
+
+  if (has('lipsync')) tools.push(tool('lip_sync', `Ajusta la boca del personaje de un video a una línea de voz ya generada con generate_speech (${MODELS.lipsync.usdPerSecond} USD por segundo de video, cobrado por tramos de ${MODELS.lipsync.stepSeconds} s). Solo para planos donde un personaje habla a cámara. El video debe durar de 2 a 10 s y tener al personaje con la cara visible; la voz, de 2 a 60 s. Devuelve un video nuevo (con la voz incluida): la toma original no se toca.`, z.object({
+    video_file: path.describe('Toma final del plano, por ejemplo production/generation-operators/v1/S03-t1.mp4.'),
+    audio_file: path.describe('Línea de voz de ese plano, hecha con generate_speech.'),
+    filename: z.string().describe('Nombre de salida terminado en .mp4, por ejemplo S03-t1-lip.mp4.'),
+  }), async (input, tmp) => {
+    const name = output(input.filename, '.mp4')
+    if (kindOf(input.video_file) !== 'video' || kindOf(input.audio_file) !== 'audio') throw new Error('video_file debe ser un video y audio_file un audio')
+    const video = await ff.probe(await pull(tmp, input.video_file))
+    const audioLocal = await pull(tmp, input.audio_file)
+    const audio = await ff.probe(audioLocal)
+    const seconds = video.durationSeconds ?? 0
+    // Límites que publica la página de fal.ai del modelo: se comprueban antes de pagar.
+    // Una toma de 10 s mide 10.04: se deja un margen sobre el límite publicado.
+    if (seconds < 2 || seconds > 10.5) throw new Error(`el video dura ${seconds} s y la sincronía admite de 2 a 10 s`)
+    if (!video.width || !video.height || Math.min(video.width, video.height) < 720 || Math.max(video.width, video.height) > 1920) throw new Error(`el video mide ${video.width}x${video.height} y la sincronía exige entre 720 y 1920 px por lado`)
+    if ((audio.durationSeconds ?? 0) < 2 || (audio.durationSeconds ?? 0) > 60 || (await readFile(audioLocal)).length > 5 * 1048576) throw new Error('la voz debe durar de 2 a 60 s y pesar menos de 5 MB')
+    const [videoUrl, audioUrl] = await Promise.all([ctx.files.url(resolve(input.video_file)), ctx.files.url(resolve(input.audio_file))])
+    const result = await paid(lipSyncUsd(seconds), tmp, name, () => fal.lipSync({ videoUrl, audioUrl, videoSeconds: seconds }), { tool: 'lip_sync', provider: 'fal.ai', prompt: null, inputs: [input.video_file, input.audio_file], license: FAL_LICENSE })
+    return (audio.durationSeconds ?? 0) > seconds + 0.3 ? `${result}\nAviso: la voz dura ${audio.durationSeconds} s y el video ${seconds} s; el sobrante de voz no se ve en la boca.` : result
+  }))
+
+  if (has('animatic')) tools.push(tool('build_animatic', 'Monta el animatic: los cuadros del storyboard, cada uno el tiempo que dura su plano, en un solo video de 1920x1080 sin audio. Se hace en el servidor y no cuesta nada. Con `label` sobreimprime texto abajo, por ejemplo el número de plano y la línea de voz, para juzgar el ritmo.', z.object({
+    frames: z.array(z.object({
+      file: path.describe('Cuadro del storyboard del plano, o el logo del cliente (brand/...) para el cierre de marca.'),
+      seconds: z.number().min(0.5).max(30).describe('Duración real del plano, la de shots.json.'),
+      label: z.string().min(1).max(80).optional().describe('Texto a sobreimprimir, por ejemplo «S02 · Mamá, ¿me alcanzas el pan?».'),
+    })).min(1).max(40),
+    filename: z.string().describe('Nombre de salida terminado en .mp4, por ejemplo animatic.mp4.'),
+  }), async (input, tmp) => {
+    const name = output(input.filename, '.mp4')
+    const [width, height] = ff.SIZES['16:9']
+    const frames: ff.Frame[] = []
+    // Los textos se renderizan de uno en uno: cada uno abre una página del navegador de render.
+    for (const [i, f] of input.frames.entries()) {
+      if (kindOf(f.file) !== 'image') throw new Error(`${f.file} no es una imagen`)
+      let overlay: string | undefined
+      if (f.label) {
+        overlay = join(tmp, `label${i}.png`)
+        await renderSuper({ text: f.label, position: 'bottom', color: '#ffffff', width, height }, overlay)
+      }
+      frames.push({ file: await pull(tmp, f.file), seconds: f.seconds, overlay })
+    }
+    const out = join(tmp, `out-${name}`)
+    await ff.animatic(frames, out)
+    return save(out, name, derived('build_animatic', 'ffmpeg + Remotion', input.frames.map((f) => f.file), JSON.stringify(input.frames.map((f) => [f.seconds, f.label ?? null]))))
   }))
 
   if (has('voice')) tools.push(
@@ -377,6 +435,8 @@ const SAY: Record<string, (i: any) => string> = {
   list_provenance: () => 'Revisando la procedencia de los archivos',
   generate_image: (i) => `Generando la imagen ${i.filename}`,
   generate_video: (i) => `Generando el video ${i.filename} (${i.quality === 'final' ? 'toma final' : 'prueba'}, ${i.duration_seconds} s)`,
+  lip_sync: (i) => `Sincronizando los labios en ${i.filename}`,
+  build_animatic: (i) => `Montando el animatic ${i.filename} con ${i.frames?.length ?? 0} cuadros`,
   list_voices: () => 'Escuchando el catálogo de voces',
   generate_speech: (i) => `Grabando la locución ${i.filename}`,
   generate_music: (i) => `Componiendo ${i.filename}`,

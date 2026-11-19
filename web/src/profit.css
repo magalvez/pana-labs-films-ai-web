@@ -1,0 +1,107 @@
+/* Rentabilidad: la pantalla nueva y la sección de cada hoja de Producciones.
+   Mismo estudio de noche y mismo papel; las cifras van en tipografía de píxel.
+   Un número negativo se reconoce por el signo «−» y la palabra «pérdida»; el rojo solo los acompaña.
+   El movimiento de entrada queda apagado por la regla de prefers-reduced-motion de polish.css. */
+
+:root { --pf-sold: #0b74b8; --pf-cost: #c2571a; --pf-neg-paper: #a3231c; --pf-neg-night: #ff9d95; }
+
+.pf-rule { max-width: 90ch; margin: -6px 0 22px; font-size: 14px; color: #aeb7d0; }
+.filters .export { align-self: end; color: var(--chalk); }
+.filters input[type=date], .filters input[type=month] { color-scheme: dark; }
+
+/* Tarjetas: cinco cifras. Heredan el marcador; aquí cambian el tamaño de la cifra y el color de la pérdida. */
+.pf-cards { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.pf-cards dd:not(.sub) { font-size: 32px; overflow-wrap: anywhere; }
+.pf-cards > div:nth-child(5) { animation-delay: 280ms; }
+.pf-cards > div.neg dd:not(.sub) { color: var(--pf-neg-night); }
+
+/* Paneles de papel */
+.pf-panel { background: var(--paper); color: var(--ink); padding: 24px clamp(16px, 3vw, 32px) 28px; border-top: 12px solid var(--amber); margin-bottom: 24px; animation: rise-in .45s cubic-bezier(.2, .8, .2, 1) both; }
+.pf-panel h3 { font-size: 24px; margin: 0 0 12px; padding-bottom: 6px; border-bottom: 2px solid var(--ink); }
+.pf-panel p { margin: 0 0 10px; }
+.pf-panel .legend { margin: 0 0 8px; color: #5b5547; }
+.pf-empty { max-width: 640px; }
+.pf-key { width: 14px; height: 14px; border-radius: 3px; margin-left: 10px; display: inline-block; }
+.pf-key:first-of-type { margin-left: 0; }
+.pf-key.sold, .pf-bar.sold { background: var(--pf-sold); }
+.pf-key.cost, .pf-bar.cost { background: var(--pf-cost); }
+
+.pf-panel table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.pf-panel th, .pf-panel td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--paper-line); vertical-align: middle; font-weight: 400; }
+.pf-panel thead th { font-size: 13px; color: #5b5547; border-bottom: 2px solid var(--paper-line); vertical-align: bottom; }
+.pf-panel tbody th, .pf-panel tfoot th { font-weight: 700; }
+.pf-panel th small { display: block; font-weight: 400; font-size: 13px; color: #5b5547; }
+.pf-panel .num { text-align: right; white-space: nowrap; padding-right: 0; padding-left: 12px; }
+.pf-panel tbody tr { animation: rise-in .4s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 40ms); }
+.pf-panel tfoot th, .pf-panel tfoot td { border-top: 2px solid var(--ink); border-bottom: 0; }
+.pf-panel .neg, .pf-sheet .neg { color: var(--pf-neg-paper); }
+.pf-panel button, .pf-sheet button { color: var(--ink); }
+.pf-panel button.danger, .pf-sheet button.danger { color: #fff; }
+
+.both { display: inline-grid; justify-items: end; line-height: 1.25; }
+.both small, .num small.loss { font-size: 13px; color: #5b5547; }
+.neg .both small, .neg small.loss { color: var(--pf-neg-paper); }
+td.num small.loss { display: block; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; font-size: 12px; }
+.pf-table .both strong { font-family: var(--pixel); font-size: 19px; font-weight: 600; }
+.pf-table .both { font-family: var(--pixel); font-size: 16px; }
+.pf-table .both small { font-family: var(--body); }
+.pf-months .both { font-family: var(--pixel); font-size: 17px; }
+.pf-months .both small { font-family: var(--body); }
+.pf-table td.num:last-child, .pf-months td.num:last-child { font-family: var(--pixel); font-size: 17px; }
+
+/* Encabezados ordenables: botones sin caja, con la flecha como pista */
+.pf-table th button.sort { border: 0; padding: 2px 0; font: inherit; font-size: 13px; color: #5b5547; text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+.pf-table th[aria-sort=ascending] button.sort, .pf-table th[aria-sort=descending] button.sort { color: var(--ink); font-weight: 700; }
+.pf-table th[aria-sort] button.sort:hover { background: transparent; text-decoration-style: solid; }
+.pf-table .num button.sort { text-align: right; }
+
+/* Barras por mes: HTML y CSS, con la cifra escrita al lado de cada una */
+.pf-months td.bars { width: 50%; min-width: 200px; display: table-cell; }
+.bar-line { display: flex; align-items: center; gap: 8px; height: 22px; }
+.bar-line + .bar-line { margin-top: 3px; }
+.pf-bar { display: block; height: 14px; min-width: 3px; flex: none; max-width: calc(100% - 118px); transform-origin: left; animation: grow .7s cubic-bezier(.2, .8, .2, 1) both; border-radius: 0 3px 3px 0; }
+.bar-line b { font-weight: 400; font-size: 14px; white-space: nowrap; }
+
+/* Sección dentro de la hoja de cada producción */
+.pf-sheet { display: grid; gap: 14px; border: 2px solid var(--ink); padding: 18px clamp(14px, 2vw, 22px) 22px; background: #f7f0de; }
+.pf-sheet h4 { margin: 0; }
+.pf-sheet .note { margin: 0; color: #5b5547; font-size: 14px; max-width: 70ch; }
+.pf-mini { margin: 0; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.pf-mini dd { font-size: 22px; }
+.pf-mini dd.sub { font-family: var(--body); font-size: 13px; color: #5b5547; }
+.pf-mini .both small { font-family: var(--body); }
+.pf-entries td.acts { white-space: nowrap; }
+.pf-entries td.acts button { font-size: 14px; padding: 3px 8px; margin-left: 4px; }
+.pf-entries th small { font-weight: 400; }
+.pf-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px 16px; align-items: end; padding-top: 14px; border-top: 2px dashed var(--paper-line); }
+.pf-form label { display: grid; gap: 4px; font-size: 14px; }
+.pf-form .wide { grid-column: 1 / -1; }
+.pf-form fieldset { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 18px; border: 0; padding: 0; margin: 0; }
+.pf-form legend { font-family: var(--pixel); font-size: 18px; padding: 0; margin-bottom: 6px; }
+.pf-form label.pick { display: flex; align-items: center; gap: 8px; font-size: 16px; }
+.pf-form .pf-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+.pf-form input, .pf-form select { width: 100%; }
+.pf-form input[type=radio] { width: auto; }
+
+@media (max-width: 640px) {
+  /* En el móvil cada fila de la tabla se vuelve una ficha con sus etiquetas */
+  .pf-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .pf-table, .pf-table tbody, .pf-table tfoot, .pf-table tr, .pf-table th, .pf-table td { display: block; }
+  .pf-table tr { padding: 12px 0; border-bottom: 2px solid var(--ink); }
+  .pf-table th, .pf-table td { border: 0 !important; padding: 3px 0; }
+  .pf-table td.num { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding-left: 0; text-align: right; white-space: normal; }
+  .pf-table td.num::before { content: attr(data-label); font-size: 14px; color: #5b5547; text-align: left; font-family: var(--body); }
+  .pf-table tfoot tr { border-top: 2px solid var(--ink); border-bottom: 0; background: color-mix(in srgb, var(--paper-line) 40%, transparent); padding-inline: 8px; }
+  .pf-panel .pf-months td.bars { min-width: 0; }
+  .pf-months th[scope=row] { width: 64px; }
+  .pf-months .num:nth-child(3) { padding-left: 4px; }
+  .pf-months thead th:last-child, .pf-months td:last-child { display: none; }
+  .pf-cards dd:not(.sub) { font-size: 28px; }
+}
+
+/* Ajustes de alineación */
+.pf-mini .both { justify-items: start; }
+.profit .filters select, .profit .filters input { height: 40px; }
+@media (max-width: 640px) { .pf-table small.loss { display: none; } }
+.pf-entries td:first-child { white-space: nowrap; }
+.pf-entries td.num { padding-left: 12px; }

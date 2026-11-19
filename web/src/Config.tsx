@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from './api'
 import type { SchemeT } from './office/world'
+import { Regression, TelegramLink } from './Extras'
 
-export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number; imageModel: string; videoModel: string }
+export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number; imageModel: string; videoModel: string; parallelAgents: boolean }
 type Gen = { id: string; name: string; note: string; price: string }
 type Models = { image: Gen[]; video: Gen[]; models: { id: string; name: string; note: string }[]; default: string; recommended: Record<string, string> }
 type Act = (fn: () => Promise<unknown>) => Promise<boolean>
@@ -21,9 +22,9 @@ function Limit({ label, hint, value, min, max, unit, onSave }: { label: string; 
 }
 
 /** Configuración del estudio: lo que vale para todas las producciones. */
-export function Config({ settings, schemes, act, onChange }: { settings: Settings; schemes: SchemeT[]; act: Act; onChange: (s: Settings) => void }) {
+export function Config({ settings, schemes, admin, act, onChange }: { settings: Settings; schemes: SchemeT[]; admin: boolean; act: Act; onChange: (s: Settings) => void }) {
   const [catalog, setCatalog] = useState<Models | null>(null)
-  useEffect(() => { void act(async () => setCatalog(await api<Models>('/models'))) }, [])
+  useEffect(() => { if (admin) void act(async () => setCatalog(await api<Models>('/models'))) }, [admin])
   const save = (patch: Partial<Omit<Settings, 'models'>> & { models?: Record<string, string | null> }) => act(async () => onChange(await api<Settings>('/settings', 'PUT', patch)))
   const modelOf = (id: string) => settings.models[id] ?? catalog?.default ?? ''
   const changed = Object.keys(settings.models).length
@@ -32,14 +33,18 @@ export function Config({ settings, schemes, act, onChange }: { settings: Setting
     <div className="backlot team config">
       <header className="backlot-head">
         <h2>Configuración</h2>
-        <p>Lo que vale para todo el estudio. Cada cambio se guarda al instante y lo toma el siguiente agente que empiece a trabajar, también en las producciones en curso.</p>
+        <p>{admin ? 'Lo que vale para todo el estudio. Cada cambio se guarda al instante y lo toma el siguiente agente que empiece a trabajar, también en las producciones en curso.' : 'Tus avisos. El resto de la configuración del estudio la llevan los administradores.'}</p>
       </header>
 
       <div className="config-grid">
+        <TelegramLink act={act} />
+        {admin && <>
         <section className="credits" aria-label="General">
           <h3>General</h3>
           <label className="check"><input type="checkbox" checked={settings.humanReview} onChange={(e) => save({ humanReview: e.target.checked })} />
             <span><strong>Revisión humana en cada etapa</strong>Cuando el auditor aprueba una etapa, el proyecto espera tu visto bueno. Apagada, avanza solo. El auditor corre siempre.</span></label>
+          <label className="check"><input type="checkbox" checked={settings.parallelAgents} onChange={(e) => save({ parallelAgents: e.target.checked })} />
+            <span><strong>Agentes en paralelo</strong>Dentro de una etapa, los agentes que no dependen del anterior trabajan a la vez (por ejemplo, locaciones y fidelidad de producto junto al diseño de personajes). Acorta el tiempo de producción sin cambiar el costo. Apagado, van de uno en uno.</span></label>
           <label className="check"><input type="checkbox" checked={settings.simulation} onChange={(e) => save({ simulation: e.target.checked })} />
             <span><strong>Modo simulación</strong>Los agentes escriben entregables de muestra y no gastan. Apagado, cada agente llama a Claude y genera imagen, video, voz y música de verdad. Vale para los proyectos nuevos: cada proyecto conserva el modo con el que se creó.</span></label>
         </section>
@@ -93,6 +98,8 @@ export function Config({ settings, schemes, act, onChange }: { settings: Setting
             <p className="note">Un modelo más barato en un agente que juzga imágenes o decide calidad puede traer más rechazos del auditor y salir más caro. El costo de cada producción se calcula con el precio del modelo que usó cada agente.</p>
           </>}
         </section>
+        <Regression act={act} budget={settings.defaultBudget} />
+        </>}
       </div>
     </div>
   )

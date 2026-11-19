@@ -12,6 +12,7 @@ import { pgDb } from '../store.ts'
 import { createEngine } from './pipeline.ts'
 import { simRunner as realSimRunner } from './simRunner.ts'
 import { createApp } from '../app.ts'
+import { createTelegram } from '../telegram.ts'
 import { parseSuggestion, simExplorer } from '../explore.ts'
 import { createUsers } from '../users.ts'
 import { brandDir, type Db, type Files, type Runner } from './types.ts'
@@ -315,6 +316,96 @@ test('la exploración no gasta por encima del tope y la propuesta del modelo se 
   assert.throws(() => parseSuggestion('no hay json'), /No se pudo armar/)
 })
 
+test('una mejora pedida tras la entrega reabre la etapa y las siguientes, sube el tope y vuelve a entregar', async () => {
+  const { engine } = await setup()
+  await engine.setSettings({ humanReview: false })
+  const id = await start(engine)
+  assert.equal((await engine.getProject(id)).status, 'done')
+  await assert.rejects(engine.requestImprovement(id, 'production', 'Cambia la toma 2 por una más luminosa', 0, 'qa@example.com'), /cuánto se puede gastar/)
+  await assert.rejects(engine.requestImprovement(id, 'no-existe', 'Cambia la toma 2 por una más luminosa', 5, 'qa@example.com'), /no existe/)
+  await engine.requestImprovement(id, 'production', 'Cambia la toma 2 por una más luminosa', 5, 'qa@example.com')
+  await assert.rejects(engine.requestImprovement(id, 'production', 'Otra mejora distinta de la anterior', 5, 'qa@example.com'), /ya entregada/)
+  await engine.advance(id)
+  const p = await engine.getProject(id)
+  assert.deepEqual([p.status, p.budget_cap], ['done', 105])
+  const redone = (stage: string) => p.steps.filter((s) => s.stage === stage && s.version === 2).length
+  // La etapa pedida y todo lo que depende de ella se rehízo; lo anterior no se tocó.
+  assert.ok(redone('production') > 0 && redone('postproduction') > 0 && redone('delivery') > 0)
+  assert.deepEqual([redone('strategy'), redone('preproduction')], [0, 0])
+  assert.match(p.steps.find((s) => s.stage === 'production' && s.version === 1)!.feedback!, /Mejora pedida por la persona.*toma 2/s)
+})
+
+test('con el trabajo en paralelo corren a la vez solo los agentes que el esquema marca como independientes', async () => {
+  const peak = async (parallelAgents: boolean) => {
+    let now = 0, max = 0
+    const together = new Set<string>()
+    const base = simRunner()
+    const spy: Runner = { ...base, runAgent: async (run) => { now++; max = Math.max(max, now); if (now > 1) together.add(run.agent.id); await new Promise((r) => setTimeout(r, 5)); try { return await base.runAgent(run) } finally { now-- } } }
+    const { engine } = await setup(spy)
+    await engine.setSettings({ humanReview: false, parallelAgents })
+    const id = await start(engine)
+    assert.equal((await engine.getProject(id)).status, 'done')
+    return { max, together }
+  }
+  assert.equal((await peak(false)).max, 1)
+  const on = await peak(true)
+  assert.ok(on.max > 1)
+  for (const id of on.together) assert.ok(commercial.stages.flatMap((s) => s.agents).find((a) => a.id === id)!.alongside, `${id} corrió en paralelo sin estar marcado`)
+})
+
+test('el cliente opina desde su enlace y queda pendiente para el estudio; una plantilla trae las referencias', async () => {
+  const { engine } = await setup()
+  const { id } = await engine.createProject({ name: 'Con cliente', brief: 'Comercial de 15 s', budgetCap: 100, explore: true })
+  const { boards } = await engine.suggestExploration(id)
+  const { boards: made } = await engine.generateExploration(id, boards[0].id, 2)
+  await engine.selectExploration(id, made[0].images[0].file, true)
+  const { token } = await engine.shareMoodboard(id, 'qa@example.com')
+  assert.equal(await engine.addClientFeedback('no-existe-este-token-000000', { kind: 'approve' }), null)
+  await assert.rejects(engine.addClientFeedback(token, { kind: 'comment', text: '' }), /Escribe tu comentario/)
+  await engine.addClientFeedback(token, { kind: 'comment', text: 'Más luz en la cocina', name: 'Ana', target: 'Locación' })
+  await engine.addClientFeedback(token, { kind: 'approve', name: 'Ana' })
+  const notes = await engine.listClientFeedback(id)
+  assert.deepEqual(notes.map((n) => [n.kind, n.about, n.status, n.text]), [['comment', 'moodboard', 'new', 'Más luz en la cocina'], ['approve', 'moodboard', 'new', '']])
+  assert.equal((await engine.resolveClientFeedback(id, notes[0].id, 'used'))[0].status, 'used')
+  await assert.rejects(engine.resolveClientFeedback(id, notes[0].id, 'otra'), /usado o como descartado/)
+  await engine.startProduction(id)
+  const copy = await engine.createProject({ name: 'Siguiente', brief: 'Otro comercial', budgetCap: 100, explore: true, templateId: id })
+  assert.deepEqual((await engine.listReferences(copy.id)).map((r) => r.note), (await engine.listReferences(id)).map((r) => r.note))
+  await assert.rejects(engine.createProject({ name: 'Sin base', brief: 'x', budgetCap: 100, templateId: 'p_noexiste' }))
+})
+
+test('Telegram: se enlaza con un código de un solo uso y solo quien tiene acceso recibe avisos y decide', async () => {
+  const db = await makeDb()
+  const sent: { method: string; body: any }[] = []
+  const request = (async (url: string, init: any) => { sent.push({ method: String(url).split('/').pop()!, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: { username: 'PanaBot' } })) }) as unknown as typeof fetch
+  const decided: string[] = []
+  const access = new Set(['ana@example.com'])
+  const telegram = createTelegram({ db, token: 't', roleOf: async (e) => (access.has(e) ? 'member' : null), approve: async (p, st, e) => (decided.push(`ok ${p} ${st} ${e}`), 'Aprobada.'), sendBack: async (p, st, e, c) => (decided.push(`no ${p} ${st} ${c}`), 'Devuelta.'), request })
+  const texts = () => sent.filter((s) => s.method === 'sendMessage').map((s) => s.body.text as string)
+  assert.deepEqual(await telegram.status('ana@example.com'), { enabled: true, linked: false })
+  const { code, link } = await telegram.link('ana@example.com')
+  assert.equal(link, `https://t.me/PanaBot?start=${code}`)
+  await telegram.handle({ update_id: 1, message: { chat: { id: 7 }, text: '/start AAAAAAAAAAAA' } })
+  assert.match(texts().at(-1)!, /no existe o ya venció/)
+  await telegram.handle({ update_id: 2, message: { chat: { id: 7 }, text: `/start ${code}` } })
+  assert.equal((await telegram.status('ana@example.com')).linked, true)
+  await telegram.handle({ update_id: 3, message: { chat: { id: 8 }, text: `/start ${code}` } })
+  assert.match(texts().at(-1)!, /no existe o ya venció/, 'el código no sirve dos veces')
+  await telegram.notify('Etapa lista', 'p_1', 'production')
+  assert.deepEqual(sent.at(-1)!.body.reply_markup.inline_keyboard[0].map((b: any) => b.callback_data), ['ok:p_1:production', 'no:p_1:production'])
+  await telegram.handle({ update_id: 4, callback_query: { id: 'c', data: 'ok:p_1:production', message: { chat: { id: 7 } } } })
+  await telegram.handle({ update_id: 5, callback_query: { id: 'c', data: 'no:p_1:production', message: { chat: { id: 7 } } } })
+  await telegram.handle({ update_id: 6, message: { chat: { id: 7 }, text: 'Falta el producto en el plano 3' } })
+  assert.deepEqual(decided, ['ok p_1 production ana@example.com', 'no p_1 production Falta el producto en el plano 3'])
+  // Un chat sin enlazar, o de alguien que perdió el acceso, no decide ni recibe avisos.
+  await telegram.handle({ update_id: 7, callback_query: { id: 'c', data: 'ok:p_1:production', message: { chat: { id: 99 } } } })
+  access.clear()
+  await telegram.handle({ update_id: 8, callback_query: { id: 'c', data: 'ok:p_1:production', message: { chat: { id: 7 } } } })
+  const before = sent.length
+  await telegram.notify('Otra etapa', 'p_1', 'production')
+  assert.deepEqual([decided.length, sent.length], [2, before])
+})
+
 test('la biblioteca de marca se guarda por cliente y llega a los agentes', async () => {
   const seen: (string | undefined)[] = []
   const spy: Runner = { ...simRunner(), runAgent: (run) => (seen.push(run.brand?.kit), simRunner().runAgent(run)) }
@@ -368,7 +459,7 @@ test('una versión nueva parte de los archivos de la anterior y conserva su proc
   const { engine } = await setup(spy)
   await engine.setSettings({ humanReview: false })
   const id = await start(engine)
-  assert.deepEqual(found, [[], ['muestra.jpg', 'shots.json', 'storyboard.md']])
+  assert.deepEqual(found, [[], ['animatic.mp4', 'muestra.jpg', 'shots.json', 'storyboard.md']])
   const paths = (await engine.listAssets(id)).map((a) => a.path)
   assert.ok(paths.includes('preproduction/storyboard-previs/v1/muestra.jpg') && paths.includes('preproduction/storyboard-previs/v2/muestra.jpg'))
 })

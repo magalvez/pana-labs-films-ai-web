@@ -2,8 +2,9 @@ import type { Usage } from './models.ts'
 import { createHash } from 'node:crypto'
 
 /** Familias de herramientas de generación y montaje que un agente puede usar. Ver y medir archivos lo pueden hacer todos. */
-export type ToolFamily = 'image' | 'video' | 'voice' | 'music' | 'sfx' | 'cut' | 'grade' | 'mix' | 'titles' | 'master' | 'versions' | 'provenance'
-export type AgentDef = { id: string; name: string; deliverables: string[]; tools?: ToolFamily[] }
+export type ToolFamily = 'image' | 'video' | 'lipsync' | 'animatic' | 'voice' | 'music' | 'sfx' | 'cut' | 'grade' | 'mix' | 'titles' | 'master' | 'versions' | 'provenance'
+/** `alongside`: no lee el trabajo del agente anterior de su etapa, así que puede correr a la vez que él. */
+export type AgentDef = { id: string; name: string; deliverables: string[]; tools?: ToolFamily[]; alongside?: boolean }
 export type StageDef = {
   id: string
   name: string
@@ -122,6 +123,8 @@ export type AgentRun = {
 
 export type AuditRun = {
   project: Project
+  /** Mejora que pide la persona sobre una etapa ya aprobada: el auditor no audita, reparte el trabajo. */
+  request?: string
   model?: string
   timeoutMs?: number
   stage: StageDef

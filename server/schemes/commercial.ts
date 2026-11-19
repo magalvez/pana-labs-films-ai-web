@@ -32,7 +32,7 @@ export const commercial: Scheme = {
         t(['image'], 'world-location', 'World & Location Agent', 'locations.md'),
         a('product-fidelity', 'Product Fidelity Agent', 'product-assets.md'),
         // El storyboard en imágenes es la aprobación barata: cada cuadro es la imagen de partida de su toma.
-        t(['image'], 'storyboard-previs', 'Storyboard & Previs Agent', 'shots.json', 'storyboard.md'),
+        t(['image', 'animatic'], 'storyboard-previs', 'Storyboard & Previs Agent', 'shots.json', 'storyboard.md', 'animatic.mp4'),
         a('legal-compliance', 'Legal & Compliance Agent', 'legal-review.md'),
         // El presupuesto cierra la etapa: ya existen los planos y ya se sabe lo gastado. Al principio solo podía adivinar.
         t(['provenance'], 'producer-budget', 'Producer / Budget Agent', 'budget.json'),
@@ -46,7 +46,7 @@ export const commercial: Scheme = {
       agents: [
         a('cinematography', 'Cinematography Agent', 'shot-specs.json'),
         t(['image', 'video'], 'generation-operators', 'Generation Operator Agents', 'takes.json'),
-        t(['voice'], 'voice-performance', 'Voice & Performance Agent', 'voice.json'),
+        t(['voice', 'lipsync'], 'voice-performance', 'Voice & Performance Agent', 'voice.json'),
         a('continuity', 'Continuity Agent', 'continuity-report.md'),
         a('dailies-review', 'Dailies Review Agent', 'selects.json'),
       ],
@@ -80,3 +80,6 @@ export const commercial: Scheme = {
     },
   ],
 }
+
+// Agentes que no leen el trabajo del anterior en su etapa: con el trabajo en paralelo activado corren a la vez que él.
+for (const id of ['world-location', 'product-fidelity', 'sound-music', 'performance-analyst']) commercial.stages.flatMap((s) => s.agents).find((a) => a.id === id)!.alongside = true

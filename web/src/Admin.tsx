@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { Markdown } from './markdown'
 import { Media } from './media'
+import { SheetFinance } from './Profit'
 
 type Row = { id: string; name: string; brief: string; scheme: string; status: string; reason: string | null; brand: string | null; budget_cap: number; spent: number; simulation: boolean; created_at: string; approved: number; stages: number; runs: number; reworks: number; generation: number; master: string | null; shares: number; last_activity: string | null }
 type Run = { stage: string; who: string; name: string; kind: 'agente' | 'auditor' | 'memoria' | 'exploracion'; n: number; usd: number; repeat: boolean; startedAt: string; endedAt: string }
@@ -296,6 +297,8 @@ function Sheet({ row, act, onOpen, onChanged, onDeleted }: { row: Row; act: Act;
           </details>
         </>
       )}
+
+      <SheetFinance id={row.id} spent={row.spent} act={act} />
 
       <section className="client">
         <h4>Para el cliente</h4>

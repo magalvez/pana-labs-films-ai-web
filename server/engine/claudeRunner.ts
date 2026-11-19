@@ -118,6 +118,8 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
   return {
     async runAgent({ project, stage, agent, version, dir, files, brand, inputs, feedback, to, say, spend, record, assets, signal, model: chosen, timeoutMs, media: generation }: AgentRun) {
       const model = pick(chosen)
+      // Lo gastado al empezar: si el motor actualiza `project.spent` en vivo (agentes en paralelo), vale lo mayor.
+      const before = project.spent
       const written = new Set<string>()
       // Lo que el agente escribió o generó en esta ejecución, sin contar lo que heredó de la versión anterior.
       const changed = new Set<string>()
@@ -127,7 +129,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       const media = mediaTools({
         imageModel: generation?.image, videoModel: generation?.video,
         projectId: project.id, dir, families: agent.tools ?? [], files, brand, brandName: brand?.name ?? project.name, record, assets,
-        budgetLeft: () => project.budget_cap - project.spent - used,
+        budgetLeft: () => project.budget_cap - Math.max(project.spent, before + used),
         spend: async (usd) => { used += usd; await spend(usd) },
         wrote: (name) => { written.add(name); changed.add(name) },
         abort: (err) => { stop.error = err; stop.controller.abort() },
@@ -159,14 +161,15 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       return { costUsd: 0, model }
     },
 
-    async runAuditor({ project, stage, deliverables, files, brand, say, assets, spend, signal, model, timeoutMs }: AuditRun): Promise<Verdict> {
+    async runAuditor({ project, stage, deliverables, files, brand, say, assets, spend, signal, model, timeoutMs, request }: AuditRun): Promise<Verdict> {
       const stop: Stop = { controller: new AbortController() }
       let used = 0
+      const before = project.spent
       // El auditor mira y mide los archivos, y consulta su procedencia. No genera nada.
       const media = mediaTools({
         projectId: project.id, dir: null, families: [], files, brand, brandName: brand?.name ?? project.name, assets,
         // El auditor no genera, pero sí puede pedir una revisión de video, que cuesta centavos.
-        budgetLeft: () => project.budget_cap - project.spent - used, spend: async (usd) => { used += usd; await spend(usd) }, record: async () => {}, wrote: () => {},
+        budgetLeft: () => project.budget_cap - Math.max(project.spent, before + used), spend: async (usd) => { used += usd; await spend(usd) }, record: async () => {}, wrote: () => {},
         abort: (err) => { stop.error = err; stop.controller.abort() },
       })
       const ids = stage.agents.map((a) => a.id)
@@ -198,7 +201,9 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
 - Si el mensaje trae fotos de referencia de la persona, míralas: lo que un agente hizo por seguirlas no es un incumplimiento, y apartarse de ellas sí lo es.
 - En un reintento, comprueba primero lo que pediste la vez anterior. No añadas exigencias nuevas de gusto sobre trabajo que ya habías dado por bueno.\n- Termina llamando a submit_verdict.`
       const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}${await refNote(files, project.id)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}. Estas cifras son las del sistema y mandan sobre las que digan los documentos.\n\nEntregables de la etapa ${stage.name}:\n${await describe(files, project.id, deliverables)}\n\nAgentes de la etapa y lo que cada uno puede hacer:\n${stage.agents.map((a) => `- ${a.id}: escribe ${a.deliverables.join(', ')}${a.tools?.length ? `; herramientas: ${a.tools.join(', ')}` : '; sin herramientas de generación ni montaje'}`).join('\n')}`
-      await loop(system, prompt, [readTool(files, project.id), verdictTool, ...media], say, limit(true, timeoutMs), stop, signal, async (usd, use) => { used += usd; await spend(usd, use) }, pick(model))
+      // Con una mejora pedida sobre la pieza ya entregada, el auditor no juzga: decide quién de su etapa rehace qué.
+      const ask = request ? `\n\nESTA VEZ NO AUDITAS: REPARTES UNA MEJORA. La pieza ya se entregó y la persona que dirige el proyecto pide esto sobre tu etapa:\n«${request}»\nLee los entregables que haga falta y decide qué agente de tu etapa debe rehacer o actualizar qué. Llama a submit_verdict con approved en false y un problema por cada agente que deba trabajar, con la instrucción exacta y los archivos que debe cambiar. No incluyas a quien no tenga nada que cambiar, y pide solo lo que cada agente puede hacer con sus herramientas.` : ''
+      await loop(system, prompt + ask, [readTool(files, project.id), verdictTool, ...media], say, limit(true, timeoutMs), stop, signal, async (usd, use) => { used += usd; await spend(usd, use) }, pick(model))
       if (!verdict) throw new Error(`${stage.auditor.name} terminó sin emitir veredicto.`)
       return { ...verdict, costUsd: 0 }
     },

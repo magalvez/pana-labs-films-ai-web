@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises'
-import { MODELS, imageModel, videoModel } from './prices.ts'
+import { MODELS, imageModel, lipSyncUsd, videoModel } from './prices.ts'
 
 const key = () => {
   if (!process.env.FAL_KEY) throw new Error('Falta FAL_KEY en el archivo .env: sin ella no se puede generar imagen ni video.')
@@ -80,12 +80,19 @@ export async function generateImage(o: { prompt: string; aspect: string; referen
   return { bytes: await download(image.url), contentType: 'image/jpeg', model: endpoint, costUsd: m.usdPerImage, seed: out.seed == null ? null : String(out.seed) }
 }
 
-export async function generateVideo(o: { prompt: string; imageUrl: string; durationSeconds: number; quality: 'draft' | 'final'; negativePrompt?: string; model?: string }): Promise<Generated> {
+export async function generateVideo(o: { prompt: string; imageUrl: string; durationSeconds: number; quality: 'draft' | 'final'; negativePrompt?: string; model?: string; /** Personajes y objetos de referencia (solo Kling 3.0): imagen frontal y otras vistas. */ elements?: { frontal: string; references: string[] }[] }): Promise<Generated> {
   const m = o.quality === 'final' ? videoModel(o.model) : MODELS.draft
   const input = o.quality === 'final'
-    ? { prompt: o.prompt, start_image_url: o.imageUrl, duration: String(o.durationSeconds), generate_audio: false, ...(o.negativePrompt ? { negative_prompt: o.negativePrompt } : {}) }
+    ? { prompt: o.prompt, start_image_url: o.imageUrl, duration: String(o.durationSeconds), generate_audio: false, ...(o.elements?.length ? { elements: o.elements.map((e) => ({ frontal_image_url: e.frontal, ...(e.references.length ? { reference_image_urls: e.references } : {}) })) } : {}), ...(o.negativePrompt ? { negative_prompt: o.negativePrompt } : {}) }
     : { prompt: o.prompt, image_url: o.imageUrl, duration: o.durationSeconds, resolution: '360p', ...(o.negativePrompt ? { negative_prompt: o.negativePrompt } : {}) }
   const out = await fal(m.endpoint, input, 15 * 60_000)
   if (!out.video?.url) throw new Error('fal.ai no devolvió video')
   return { bytes: await download(out.video.url), contentType: 'video/mp4', model: m.endpoint, costUsd: m.usdPerSecond * o.durationSeconds, seed: out.seed == null ? null : String(out.seed) }
+}
+
+/** Ajusta la boca del personaje de un video a una pista de voz. El video debe durar de 2 a 10 s y la voz de 2 a 60 s. */
+export async function lipSync(o: { videoUrl: string; audioUrl: string; videoSeconds: number }): Promise<Generated> {
+  const out = await fal(MODELS.lipsync.endpoint, { video_url: o.videoUrl, audio_url: o.audioUrl }, 10 * 60_000)
+  if (!out.video?.url) throw new Error('fal.ai no devolvió video')
+  return { bytes: await download(out.video.url), contentType: 'video/mp4', model: MODELS.lipsync.endpoint, costUsd: lipSyncUsd(o.videoSeconds), seed: null }
 }

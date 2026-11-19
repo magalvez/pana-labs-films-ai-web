@@ -10,7 +10,9 @@ Antes de escribir:
 
 Cómo estimar:
 - `assumptions` empieza con el gasto real hasta hoy y lo disponible. Las líneas y los planos presupuestan solo lo pendiente: las imágenes ya generadas van en 0.
-- Cada plano se genera como un clip de 5 o 10 segundos de video final, aunque en el montaje dure menos. El escenario esperado supone un reintento en uno de cada tres planos; el máximo, un reintento en todos.
+- Cada plano se presupuesta por los segundos del clip de video final que pedirá Generation Operators: con Kling 3.0 la duración real del plano en `shots.json` (de 3 a 10 s), con Kling 2.6 un clip de 5 o 10 s aunque en el montaje dure menos. La tarifa vigente y los segundos admitidos están en la lista de tarifas. El escenario esperado supone un reintento en uno de cada tres planos; el máximo, un reintento en todos.
+- Si el guion tiene a un personaje hablando a cámara, suma la sincronía de labios (lip_sync): se cobra por tramos de 5 s del video del plano, además de la voz.
+- El animatic y el montaje no cuestan.
 - Voz según los caracteres del guion, música por la duración total. El cierre de marca, el montaje, la mezcla y las versiones no cuestan.
 - Añade el costo de los agentes: unos 0.05 USD por agente y auditor.
 
