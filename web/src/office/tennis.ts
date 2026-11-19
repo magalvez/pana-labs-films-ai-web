@@ -1,13 +1,33 @@
-// El partido del Mando: una cancha de polvo de ladrillo donde el Creative Lead y el Creative Manager juegan singles.
+// El partido de la cafetería: una cancha de polvo de ladrillo donde el Creative Lead y el Creative Manager juegan singles.
 // Es una simulación pequeña: la pelota vuela con gravedad, bota, y cada jugador corre a donde va a caer.
 // Los puntos se ganan de verdad: por un tiro que el otro no alcanza, por red o por fuera.
 type C = CanvasRenderingContext2D
 type Frames = { idle: CanvasImageSource; stepA: CanvasImageSource; stepB: CanvasImageSource }
 
-// Geometría, en píxeles de la oficina. La sala del Mando ocupa de (3,34) a (213,173).
-export const ROOM = { x: 3, y: 34, w: 210, h: 139 }
-const L = 60, R = 156, T = 58, B = 162, NET = 110, SVC = 26, CX = 108, ALLEY = 10
-const G = 90, RUN = 78, REACH_X = 9, REACH_Y = 18
+// Geometría, en píxeles de la oficina. Con partido, la cafetería entera se vuelve estadio: de (651,34) a (861,349).
+// Es el doble de larga que la sala del Mando, así que se corre y se pega más fuerte.
+export const ROOM = { x: 651, y: 34, w: 210, h: 315 }
+// La franja izquierda, junto a las puertas, es la gradería lateral: por ahí entra el público y nadie pisa la arcilla.
+export const STAND = 39
+// Arriba, contra la pared, la tribuna de fondo: dos filas y las vallas de publicidad. Debajo empieza la arcilla.
+export const NORTH = 46
+const ROWS = [6, 22], COLS = [55, 77, 99, 121, 143, 165, 187]
+const L = 714, R = 826, T = 108, B = 308, NET = 208, SVC = 48, CX = 770, ALLEY = 12
+const G = 90, RUN = 96, REACH_X = 9, REACH_Y = 18
+/** La silla del juez, en la gradería, a la altura de la red. */
+const CHAIR = ROOM.x + 21
+// Bancas de la gradería (y local). Frente a las dos puertas queda libre el paso.
+const BENCHES: number[] = []
+// Tampoco hay bancas junto a la red: ahí va la silla alta del juez, sola, para que se distinga.
+for (let y = 52; y < ROOM.h - 10; y += 22) if (!((y > 86 && y < 132) || (y > 262 && y < 308) || Math.abs(ROOM.y + y + 7 - NET) < 30)) BENCHES.push(y)
+/** Asientos del público, en píxeles de la oficina: primero la tribuna de fondo, luego la gradería lateral. */
+export const SEATS = [
+  ...ROWS.flatMap((y) => COLS.map((x) => ({ x: ROOM.x + x, y: ROOM.y + y + 7 }))),
+  ...BENCHES.flatMap((y) => [10, 27].map((x) => ({ x: ROOM.x + x, y: ROOM.y + y + 7 }))),
+]
+/** Donde se para cada jugador para empezar: 0 abajo, 1 arriba. */
+export const HOME = [{ x: CX, y: B + 8 }, { x: CX, y: T - 8 }]
+export const UMPIRE = { x: CHAIR + 7, y: NET - 12 }
 const WHO = ['Lead', 'Manager'], NAMES = ['0', '15', '30', '40']
 const COLORS = ['#d6453d', '#3d7bd6']
 
@@ -21,9 +41,9 @@ export type Hooks = {
   burst: (x: number, y: number, n: number) => void
 }
 
-/** `from` son las posiciones de partida: los jugadores llegan corriendo desde donde estaban en la oficina. */
+/** `from` son las posiciones de partida: donde quedó cada jugador al entrar caminando a la cancha. */
 export function createTennis(from: { x: number; y: number }[], hooks: Hooks, rand: () => number = Math.random) {
-  const home = [{ x: CX, y: 168 }, { x: CX, y: 56 }]
+  const home = HOME
   // 0 juega abajo, de espaldas a quien mira. 1 juega arriba, de frente.
   const pl: Player[] = [0, 1].map((i) => ({ x: from[i].x, y: from[i].y, tx: home[i].x, ty: home[i].y, wait: 0, swing: 0, side: i ? -1 : 1, hop: 0, moving: false, up: false }))
   const ball = { x: CX, y: NET, z: 0, vx: 0, vy: 0, vz: 0, live: false }
@@ -39,7 +59,7 @@ export function createTennis(from: { x: number; y: number }[], hooks: Hooks, ran
   const between = (a: number, b: number) => a + rand() * (b - a)
   const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v))
   // Los pies de cada jugador se quedan en su mitad, sin pisar la red ni salirse de la sala.
-  const keep = (i: number, p: { x: number; y: number }) => ({ x: clamp(p.x, 40, 176), y: i ? clamp(p.y, 55, NET - 10) : clamp(p.y, NET + 14, 170) })
+  const keep = (i: number, p: { x: number; y: number }) => ({ x: clamp(p.x, ROOM.x + STAND + 10, ROOM.x + ROOM.w - 10), y: i ? clamp(p.y, ROOM.y + NORTH + 8, NET - 10) : clamp(p.y, NET + 14, ROOM.y + ROOM.h - 8) })
   const puff = (x: number, y: number, n: number) => { for (let i = 0; i < n; i++) dust.push({ x, y, vx: between(-14, 14), vy: between(-12, -2), life: between(0.25, 0.6) }) }
 
   /** Lado desde el que se saca: a la derecha del sacador en los puntos pares. */
@@ -92,8 +112,8 @@ export function createTennis(from: { x: number; y: number }[], hooks: Hooks, ran
     if (f === 'out') { if (rand() < 0.5) x = x > CX ? R + between(5, 9) : L - between(5, 9); else y = NET + far * (NET - T + between(5, 9)) }
     const p = pl[i]
     // El peloteo se va acelerando: tarde o temprano alguien no llega.
-    const speed = 118 * (1 + 0.05 * Math.min(rally, 8)) + between(0, 20)
-    launch(i, { x, y }, clamp(Math.hypot(x - p.x, y - p.y) / speed, 0.55, 1.25), 8, f)
+    const speed = 190 * (1 + 0.05 * Math.min(rally, 8)) + between(0, 20)
+    launch(i, { x, y }, clamp(Math.hypot(x - p.x, y - p.y) / speed, 0.55, 1.4), 8, f)
   }
 
   function end(w: number, call: string | null) {
@@ -191,7 +211,37 @@ export function createTennis(from: { x: number; y: number }[], hooks: Hooks, ran
     const r = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff
     g.fillStyle = '#c1582f'; g.fillRect(0, 0, ROOM.w, ROOM.h)
     for (let y = 0; y < ROOM.h; y += 6) { g.fillStyle = y % 12 ? 'rgba(255,220,180,.05)' : 'rgba(60,20,0,.05)'; g.fillRect(0, y, ROOM.w, 3) }
-    for (let i = 0; i < 1300; i++) { g.fillStyle = r() < 0.5 ? '#cf6a3d' : '#a94a26'; g.fillRect((r() * ROOM.w) | 0, (r() * ROOM.h) | 0, 1, 1) }
+    for (let i = 0; i < 2600; i++) { g.fillStyle = r() < 0.5 ? '#cf6a3d' : '#a94a26'; g.fillRect((r() * ROOM.w) | 0, (r() * ROOM.h) | 0, 1, 1) }
+    // Gradería: piso de tablas oscuras, bancas de madera y una baranda que la separa de la arcilla.
+    g.fillStyle = '#2f3650'; g.fillRect(0, 0, STAND, ROOM.h)
+    for (let y = 0; y < ROOM.h; y += 4) { g.fillStyle = 'rgba(0,0,0,.14)'; g.fillRect(0, y, STAND - 2, 1) }
+    for (const y of BENCHES) {
+      g.fillStyle = 'rgba(0,0,0,.3)'; g.fillRect(2, y + 9, STAND - 6, 2)
+      g.fillStyle = '#1a1420'; g.fillRect(1, y, STAND - 4, 10); g.fillStyle = '#b98a5a'; g.fillRect(2, y + 1, STAND - 6, 3); g.fillStyle = '#8a623d'; g.fillRect(2, y + 4, STAND - 6, 5)
+      g.fillStyle = '#75512f'; g.fillRect(STAND / 2 - 1 | 0, y + 1, 1, 8)
+    }
+    // Tribuna de fondo: mismas tablas, dos filas largas de bancas y, al borde de la arcilla, las vallas de publicidad.
+    g.fillStyle = '#2f3650'; g.fillRect(STAND, 0, ROOM.w - STAND, NORTH)
+    for (let y = 0; y < NORTH; y += 4) { g.fillStyle = 'rgba(0,0,0,.14)'; g.fillRect(STAND, y, ROOM.w - STAND, 1) }
+    for (const y of ROWS) {
+      g.fillStyle = 'rgba(0,0,0,.3)'; g.fillRect(STAND + 5, y + 9, ROOM.w - STAND - 8, 2)
+      g.fillStyle = '#1a1420'; g.fillRect(STAND + 4, y, ROOM.w - STAND - 7, 10); g.fillStyle = '#b98a5a'; g.fillRect(STAND + 5, y + 1, ROOM.w - STAND - 9, 3); g.fillStyle = '#8a623d'; g.fillRect(STAND + 5, y + 4, ROOM.w - STAND - 9, 5)
+      for (const x of COLS.slice(1)) { g.fillStyle = '#75512f'; g.fillRect(x - 11, y + 1, 1, 8) }
+    }
+    g.font = '7px "Pixelify Sans", monospace'; g.textBaseline = 'top'
+    const ads: [string, string, string][] = [['Café 24 h', '#25382f', '#efe6d0'], ['Pana Films', '#f2b632', '#1a1420'], ['Pana Lab', '#3d5a80', '#efe6d0']]
+    const aw = (ROOM.w - STAND) / ads.length
+    g.fillStyle = '#1a1420'; g.fillRect(STAND, NORTH - 11, ROOM.w - STAND, 11)
+    ads.forEach(([text, back, ink], i) => {
+      const x = Math.round(STAND + i * aw)
+      g.fillStyle = back; g.fillRect(x + 1, NORTH - 10, Math.round(aw) - 2, 9)
+      g.fillStyle = ink; g.fillText(text, x + Math.round((aw - g.measureText(text).width) / 2), NORTH - 9)
+    })
+    // Tarima clara del juez.
+    g.fillStyle = '#1a1420'; g.fillRect(4, NET - ROOM.y - 20, STAND - 9, 40); g.fillStyle = '#566080'; g.fillRect(5, NET - ROOM.y - 19, STAND - 11, 38)
+    g.fillStyle = '#1a1420'; g.fillRect(STAND - 2, 0, 2, ROOM.h)
+    g.fillStyle = '#efe6d0'; g.fillRect(STAND - 2, 0, 1, ROOM.h)
+    for (let y = 6; y < ROOM.h; y += 24) { g.fillStyle = '#1a1420'; g.fillRect(STAND - 3, y, 3, 3) }
     // Zonas gastadas detrás de cada línea de fondo, donde más se corre.
     for (const y of [T - 4, B + 1]) for (let i = 0; i < 60; i++) { g.fillStyle = 'rgba(232,150,105,.5)'; g.fillRect(CX - 26 + ((r() * 52) | 0) - ROOM.x, y + ((r() * 7) | 0) - ROOM.y, 2, 1) }
     const line = (x: number, y: number, w: number, h: number) => { g.fillStyle = '#f6ecdc'; g.fillRect(x - ROOM.x, y - ROOM.y, w, h) }
@@ -240,31 +290,37 @@ export function createTennis(from: { x: number; y: number }[], hooks: Hooks, ran
   }
 
   /** `frames`: las figuras de cada jugador. `umpire` dibuja al juez sobre su silla. */
-  function draw(c: C, t: number, frames: [Frames, Frames], umpire: () => void) {
+  function draw(c: C, t: number, frames: [Frames, Frames], umpire: () => void, playing = true) {
     court ??= paintCourt()
     c.drawImage(court, ROOM.x, ROOM.y)
     for (const m of marks) { c.globalAlpha = Math.min(1, m.life / 3) * 0.7; P(c, '#8f3d1e', m.x - 1, m.y, 3, 2) }
     c.globalAlpha = 1
     // Silla del juez, junto a la red.
-    P(c, '#1a1420', 21, NET - 9, 2, 20); P(c, '#1a1420', 34, NET - 9, 2, 20); P(c, '#1a1420', 21, NET + 2, 15, 1); P(c, '#3f9d5a', 20, NET - 10, 17, 3)
-    umpire()
-    const things: { y: number; f: () => void }[] = [
-      { y: NET, f: () => drawNet(c) },
-      { y: pl[0].y, f: () => drawPlayer(c, 0, frames[0], t) },
-      { y: pl[1].y, f: () => drawPlayer(c, 1, frames[1], t) },
-    ]
-    if (ball.live) things.push({ y: ball.y + 0.5, f: () => drawBall(c) })
-    things.sort((a, b) => a.y - b.y).forEach((i) => i.f())
-    for (const d of dust) { c.globalAlpha = Math.min(1, d.life * 2.5); P(c, '#eab08a', d.x, d.y, 2, 2) }
-    c.globalAlpha = 1
-    // Focos: dos conos de luz cálida desde las esquinas de arriba.
+    // Focos: dos conos de luz cálida desde las esquinas de arriba. Iluminan el piso, no a las personas:
+    // así nadie cambia de tono al asomar fuera de la arcilla.
     c.globalCompositeOperation = 'lighter'
     for (const x of [ROOM.x + 12, ROOM.x + ROOM.w - 12]) {
-      const g = c.createRadialGradient(x, ROOM.y, 4, x, ROOM.y, 130)
+      const g = c.createRadialGradient(x, ROOM.y, 4, x, ROOM.y, 210)
       g.addColorStop(0, `rgba(255,240,190,${(0.2 + Math.sin(t * 3 + x) * 0.015).toFixed(3)})`); g.addColorStop(1, 'rgba(255,240,190,0)')
       c.fillStyle = g; c.fillRect(ROOM.x, ROOM.y, ROOM.w, ROOM.h)
     }
     c.globalCompositeOperation = 'source-over'
+    // Silla alta del juez: patas blancas con escalera, asiento verde y una sombrilla a rayas para que se le vea de lejos.
+    for (const x of [CHAIR, CHAIR + 13]) { P(c, '#1a1420', x - 1, NET - 13, 4, 30); P(c, '#efe6d0', x, NET - 12, 2, 28) }
+    for (const y of [NET - 2, NET + 5, NET + 12]) P(c, '#efe6d0', CHAIR + 2, y, 11, 1)
+    P(c, '#1a1420', CHAIR - 2, NET - 15, 19, 5); P(c, '#3f9d5a', CHAIR - 1, NET - 14, 17, 3)
+    // Mientras llegan caminando, la cancha espera vacía: a los tres los dibuja la oficina.
+    if (playing) umpire()
+    P(c, '#1a1420', CHAIR + 15, NET - 42, 2, 28)
+    P(c, '#1a1420', CHAIR - 6, NET - 44, 28, 6); P(c, '#1a1420', CHAIR, NET - 47, 16, 4)
+    for (let i = 0; i < 6; i++) P(c, i % 2 ? '#efe6d0' : '#d6453d', CHAIR - 5 + i * 4 + (i > 2 ? 2 : 0), NET - 43, i === 2 ? 6 : 4, 4)
+    P(c, '#d6453d', CHAIR + 1, NET - 46, 14, 3); P(c, '#efe6d0', CHAIR + 6, NET - 46, 4, 3)
+    const things: { y: number; f: () => void }[] = [{ y: NET, f: () => drawNet(c) }]
+    if (playing) things.push({ y: pl[0].y, f: () => drawPlayer(c, 0, frames[0], t) }, { y: pl[1].y, f: () => drawPlayer(c, 1, frames[1], t) })
+    if (playing && ball.live) things.push({ y: ball.y + 0.5, f: () => drawBall(c) })
+    things.sort((a, b) => a.y - b.y).forEach((i) => i.f())
+    for (const d of dust) { c.globalAlpha = Math.min(1, d.life * 2.5); P(c, '#eab08a', d.x, d.y, 2, 2) }
+    c.globalAlpha = 1
   }
 
   /** Lo que muestra el marcador de pared: juegos y puntos de cada uno, y quién saca. */
@@ -274,6 +330,6 @@ export function createTennis(from: { x: number; y: number }[], hooks: Hooks, ran
     return [0, 1].map((i) => ({ name: WHO[i], sets: score.sets[i], games: score.games[i], points: pts(score.points[i], score.points[1 - i]), serving: score.server === i }))
   }
 
-  return { update, draw, board, score, players: pl, umpire: { x: 28, y: NET - 7 } }
+  return { update, draw, board, score, players: pl, umpire: UMPIRE }
 }
 export type Tennis = ReturnType<typeof createTennis>

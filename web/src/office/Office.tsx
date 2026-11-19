@@ -80,7 +80,7 @@ export function Office({ scheme, events, replay, selected, onSelect, onReplayEnd
       ref={canvas}
       className="office"
       role="img"
-      aria-label="Oficina de agentes. La estatua de la raqueta del Mando abre un partido de tenis decorativo. La lista de agentes del panel lateral ofrece la misma información."
+      aria-label="Oficina de agentes. La estatua de la raqueta del Mando lleva a los jugadores a la cafetería para un partido de tenis decorativo. La lista de agentes del panel lateral ofrece la misma información."
       onMouseMove={(e) => {
         world.hot = world.hotspot(...point(e))
         const a = world.hot ? null : at(e), id = a?.id ?? null

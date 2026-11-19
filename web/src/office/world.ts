@@ -1,5 +1,5 @@
 // La oficina: estado derivado de los eventos del motor y su dibujo en pixel art.
-import { ROOM, createTennis, type Tennis } from './tennis'
+import { HOME, NORTH, ROOM, SEATS, STAND as STAND_W, UMPIRE, createTennis, type Tennis } from './tennis'
 
 export type Ev = { id: number; projectId: string; ts: string; type: string; data: any }
 export type AgentT = { id: string; name: string; deliverables: string[] }
@@ -54,7 +54,6 @@ const TABLES: Pt[] = [{ x: 60, y: 108 }, { x: 156, y: 108 }, { x: 60, y: 248 }, 
 const COFFEE: Pt[] = [{ x: 90, y: 62 }, { x: 108, y: 62 }, { x: 126, y: 62 }, { x: 190, y: 82 }]
 const pick = <T,>(l: T[]) => l[Math.floor(Math.random() * l.length)]
 const street = (row: number) => row * RH + 145
-const cafeStreet = (p: Pt) => (p.y < 233 ? 145 : 321)
 
 const TALKS = [
   ['¿Viste el brief del cliente?', 'Sí. Lo quiere todo para ayer.', 'Y con el logo más grande, claro.'],
@@ -76,6 +75,7 @@ const TALKS = [
 ]
 const DESK = ['Esta toma ya casi sale', 'Ajustando la luz…', '¿Dónde dejé el guion?', 'Otro ajuste y listo', 'Este encuadre me gusta', 'Corte… y otra vez']
 const COFFEE_SAY = ['Mmm, café recién hecho', 'Combustible creativo', 'El tercero y me detengo', 'Con espuma y todo', 'Cafecito de las buenas']
+const CHEER = ['¡Vamos!', '¡Qué punto!', '¡Bravo!', '¡Esa era buena!', '¡Otra, otra!', 'Uff, casi']
 const HI = ['¡Hola!', '¿Qué tal, jefe?', '¿Me buscabas?', 'Aquí, cumpliendo', '¡Buenas! ¿Una idea?']
 const POKE = ['¡Pídeme lo que quieras!', 'Tengo un plan genial…', '¿Un café? Invito yo', 'Estoy en ello, jefe', '¡Luces, cámara…!', 'Shh, estoy concentrado']
 
@@ -139,10 +139,13 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
   let stamps: { x: number; y: number; ok: boolean; life: number }[] = []
   let flying: { x0: number; y0: number; x1: number; y1: number; t: number; dur: number; big: boolean; done?: () => void }[] = []
   let now = 0, shake = 0
-  // El partido del Mando: `mix` va de 0 (oficina) a 1 (cancha) mientras dura la transición.
-  let tennisOn = false, mix = 0, game: Tennis | null = null
-  const STATUE = { x: 190, y: 96 }, EXIT = { x: 6, y: 157, w: 41, h: 13 }
-  const PLAYERS = ['creative-lead', 'creative-manager']
+  // El partido se juega en la cafetería. Al tocar la estatua, los dos jugadores y el juez caminan desde el Mando
+  // (`going`), juegan (`playing`) y al terminar vuelven a pie (`leaving`). `mix` va de 0 (cafetería) a 1 (cancha).
+  let match: 'off' | 'going' | 'playing' | 'leaving' = 'off', tennisOn = false, mix = 0, game: Tennis | null = null
+  const STATUE = { x: 190, y: 96 }, EXIT = { x: ROOM.x + 3, y: ROOM.y + ROOM.h - 16, w: 41, h: 13 }
+  const CENTER = { x: ROOM.x + ROOM.w / 2, y: ROOM.y + ROOM.h / 2 }
+  const PLAYERS = ['creative-lead', 'creative-manager'], TRIO = [...PLAYERS, 'orchestrator']
+  const trio = () => TRIO.flatMap((id) => actors.get(id) ?? [])
   // `lookId`: el personaje bajo el cursor. En modo libre se queda quieto y te saluda.
   let lookId: string | null = null
   const world = { speed: 1, status: 'running' as string, hot: null as string | null, actors, apply, settle, reset, update, draw, actorAt, hotspot, toggleTennis, hover, poke, rally }
@@ -218,7 +221,19 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
     return c === 3 ? 3 : s < 3 ? s : s + 1
   }
   const atHome = (a: Actor) => Math.hypot(a.x - a.seat.x, a.y - a.seat.y) < 2
-  const isTennis = (a: Actor) => tennisOn && (PLAYERS.includes(a.id) || a.id === 'orchestrator')
+  const isTennis = (a: Actor) => match !== 'off' && TRIO.includes(a.id)
+  const inStand = (p: Pt) => p.x >= ROOM.x && p.y > ROOM.y && (p.x < ROOM.x + STAND_W || p.y < ROOM.y + NORTH)
+  /** Un asiento libre de la gradería, o nada si está llena. */
+  const seat = () => { const open = SEATS.filter((s) => !busy(s, 6)); return open.length ? { ...pick(open) } : null }
+  /** A ver el partido: se sienta un rato y, si quiere, comenta. */
+  const watch = (a: Actor, to: Pt) => go(a, 3, to, () => { a.mind.wait = 8 + Math.random() * 12 })
+  /** El público reacciona a lo que canta el juez: algunos saltan y uno grita. */
+  function cheer(big: boolean) {
+    const crowd = [...actors.values()].filter((a) => !TRIO.includes(a.id) && !a.queue.length && a.mind.spot && inStand(a.mind.spot))
+    for (const a of crowd) if (big || Math.random() < 0.35) a.mind.hop = now + 0.35 + Math.random() * 0.2
+    const one = crowd.length && (big || Math.random() < 0.5) ? pick(crowd) : null
+    if (one && !one.bubble) say(one, pick(CHEER), false, 1.8)
+  }
   const busy = (p: Pt, r = 14) => [...actors.values()].some((o) => o.mind.spot && Math.hypot(o.mind.spot.x - p.x, o.mind.spot.y - p.y) < r)
   const cafe = (p: Pt) => ({ x: CAFE_X + p.x, y: p.y })
   // Un tiempo de globo proporcional al texto; el siguiente que hable espera a que este termine.
@@ -228,6 +243,9 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
   function go(a: Actor, to: number, pt: Pt | null, done?: () => void) {
     const m = a.mind, from = where(a.x, a.y), pts: Pt[] = []
     m.spot = pt; m.cup = false
+    // Con partido nadie pisa la arcilla: se entra por la puerta a la gradería lateral, se sube o baja por ella
+    // hasta la altura del asiento y desde ahí se camina por la fila.
+    const cafeStreet = (p: Pt) => (p.y >= 233 ? 321 : tennisOn ? p.y : 145)
     const lane = a.room.ox + LANE, sy = street(a.room.oy ? 1 : 0)
     if (from === 3) pts.push({ x: a.x, y: cafeStreet(a) }, { x: CAFE_X + 14, y: cafeStreet(a) })
     else if (atHome(a)) pts.push(...route(a, { x: lane, y: sy }))
@@ -256,7 +274,8 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
     let to = 3, p: Pt, q: Pt
     const tables = TABLES.map((t) => [cafe({ x: t.x - 14, y: t.y + 10 }), cafe({ x: t.x + 14, y: t.y + 10 })])
     const counter = [[cafe(COFFEE[0]), cafe(COFFEE[1])], [cafe(COFFEE[1]), cafe(COFFEE[2])]]
-    const spots = [...tables, ...counter].filter(([u, v]) => !busy(u) && !busy(v))
+    // Con partido la cafetería es estadio: se conversa en las salas.
+    const spots = (tennisOn ? [] : [...tables, ...counter]).filter(([u, v]) => !busy(u) && !busy(v))
     if (spots.length && Math.random() < 0.6) { const pair = pick(spots); p = pair[0]; q = pair[1] }
     else {
       to = mine === 3 ? pick([0, 1, 2, 4, 5, 6]) : mine
@@ -281,11 +300,16 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
   function decide(a: Actor) {
     const m = a.mind, home = atHome(a), r = Math.random()
     a.state = 'idle'
+    // Con partido, la gradería es el plan favorito.
+    const place = match === 'playing' && Math.random() < 0.45 ? seat() : null
+    if (place) return watch(a, place)
     if (home && r < 0.4) { a.state = Math.random() < 0.7 ? 'working' : 'idle'; m.wait = 3 + Math.random() * 6; if (Math.random() < 0.25) say(a, pick(DESK)); return }
     if (!home && r < 0.3) { go(a, roomPos(a), null, () => { a.state = 'working'; m.wait = 3 + Math.random() * 6 }); return }
     if (r < 0.72 && startChat(a)) return
     if (r < 0.85 && !home) { const to = pick([0, 1, 2, 4, 5, 6]), x = 60 + Math.random() * 110; go(a, to, { x: roomOf(to).ox + x, y: street(to < 3 ? 0 : 1) }, () => { m.wait = 1 + Math.random() * 3 }); return }
     // Café: mostrador, máquina expendedora; la taza sale solo al llegar.
+    // Con partido el café está cerrado: quien iba por uno se queda a mirar, o espera en su sitio si no hay asiento.
+    if (tennisOn) { const to = seat(); if (to) return watch(a, to); m.wait = 2 + Math.random() * 3; return }
     const free = COFFEE.filter((s) => !busy(cafe(s))), s = pick(free.length ? free : COFFEE)
     go(a, 3, cafe(s), () => { m.cup = true; m.wait = 4 + Math.random() * 5; if (Math.random() < 0.5) say(a, pick(COFFEE_SAY)) })
   }
@@ -402,31 +426,43 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
     if (tennisOn && x >= EXIT.x && x < EXIT.x + EXIT.w && y >= EXIT.y && y < EXIT.y + EXIT.h) return 'exit'
     return Math.abs(x - STATUE.x) < 10 && y > STATUE.y - 32 && y < STATUE.y + 3 ? 'statue' : null
   }
-  /** Convierte el Mando en cancha, o lo devuelve a oficina. El partido sigue hasta que se vuelva a llamar. */
+  /** Abre la cancha en la cafetería y manda a los tres caminando, o termina el partido y los devuelve al Mando. */
   function toggleTennis() {
     tennisOn = !tennisOn
     const orch = actors.get('orchestrator')
+    // Lo que tuvieran a medias se cancela: salen desde donde estén.
+    for (const a of trio()) {
+      if (a.mind.chat) a.mind.chat.a.mind.chat = a.mind.chat.b.mind.chat = null
+      a.queue = []; a.mind.rally = 0; a.mind.cup = false; a.bubble = null
+    }
     if (tennisOn) {
-      // En modo libre los jugadores pueden andar por ahí: vuelven a su silla y cancelan lo que tuvieran a medias.
-      for (const id of [...PLAYERS, 'orchestrator']) {
-        const a = actors.get(id)
-        if (!a) continue
-        if (a.mind.chat) a.mind.chat.a.mind.chat = a.mind.chat.b.mind.chat = null
-        a.queue = []; a.x = a.seat.x; a.y = a.seat.y; a.mind.rally = 0; a.mind.spot = null
-      }
-      game = createTennis(PLAYERS.map((id) => { const a = actors.get(id)!; return { x: a.x, y: a.y } }), {
-        call: (text) => say(actors.get('orchestrator'), text),
-        burst: (x, y, n) => confetti(x, y, n, ['#f2b632', '#efe6d0', '#e9f24a']),
+      match = 'going'
+      game = createTennis(HOME, {
+        call: (text) => { say(actors.get('orchestrator'), text); cheer(false) },
+        burst: (x, y, n) => { confetti(x, y, n, ['#f2b632', '#efe6d0', '#e9f24a']); cheer(true) },
       })
+      PLAYERS.forEach((id, i) => { const a = actors.get(id); if (a) go(a, 3, { ...HOME[i] }) })
+      if (orch) go(orch, 3, { ...UMPIRE })
+      // Quien estaba en una mesa (o iba de camino a una) despeja la cancha y se va a la gradería; si está llena, a su puesto.
+      const onCourt = (p: Pt) => p.x > ROOM.x && p.y > ROOM.y
+      if (free) for (const a of actors.values()) if (!TRIO.includes(a.id) && !a.mind.rally && (onCourt(a) || (a.mind.spot && onCourt(a.mind.spot)))) {
+        if (a.mind.chat) a.mind.chat.a.mind.chat = a.mind.chat.b.mind.chat = null
+        a.queue = []; a.mind.cup = false; a.mind.spot = null
+        const place = seat()
+        if (place) watch(a, place); else go(a, roomPos(a), null, () => { a.state = 'working'; a.mind.wait = 4 + Math.random() * 6 })
+      }
       say(orch, '¡A la cancha!')
     } else {
+      match = 'leaving'
+      for (const a of trio()) go(a, 0, null)
+      // Se acabó la función: el público se levanta pronto.
+      for (const a of actors.values()) if (a.mind.spot && inStand(a.mind.spot)) a.mind.wait = Math.min(a.mind.wait, 0.5 + Math.random() * 2.5)
       say(orch, 'De vuelta al trabajo')
-      for (const id of [...PLAYERS, 'orchestrator']) { const a = actors.get(id); if (a) { a.x = a.seat.x; a.y = a.seat.y } }
     }
     confetti(STATUE.x, STATUE.y - 20, 30, ['#f2b632', '#ffe08a', '#c1582f'])
     if (!calm) shake = 0.3
   }
-  /** Los personajes del Mando siguen al partido: así sus globos y el clic caen donde están jugando. */
+  /** Los tres siguen al partido: así sus globos y el clic caen donde están jugando. */
   function followGame() {
     if (!game) return
     PLAYERS.forEach((id, i) => { const a = actors.get(id); if (a) { a.x = game!.players[i].x; a.y = game!.players[i].y } })
@@ -438,23 +474,29 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
     const k = dt * world.speed
     now += k
     mix = Math.max(0, Math.min(1, mix + (tennisOn ? dt : -dt) / 0.9))
+    // El partido empieza cuando los tres llegaron a su sitio; al volver, termina cuando el último se sienta.
+    const walking = trio().some((a) => a.queue.length)
+    if (match === 'going' && !walking) { match = 'playing'; say(actors.get('orchestrator'), '¡Juego!') }
+    if (match === 'leaving' && !walking) { match = 'off'; for (const a of trio()) a.mind.wait = 2 + Math.random() * 4 }
     if (mix > 0 && game) {
-      game.update(dt)
+      if (match === 'playing') game.update(dt)
       // Polvo de ladrillo en el borde del telón mientras se abre o se cierra.
       if (mix < 1 && !calm) for (let i = 0; i < 3; i++) {
-        const a = Math.PI * (0.5 + Math.random()), rad = mix * mix * (3 - 2 * mix) * 250
-        const x = STATUE.x + Math.cos(a) * rad, y = STATUE.y - 12 + Math.sin(a) * rad * (Math.random() < 0.5 ? 1 : -1)
+        const a = Math.PI * 2 * Math.random(), rad = mix * mix * (3 - 2 * mix) * 200
+        const x = CENTER.x + Math.cos(a) * rad, y = CENTER.y + Math.sin(a) * rad
         if (x > ROOM.x && x < ROOM.x + ROOM.w && y > ROOM.y && y < ROOM.y + ROOM.h) particles.push({ x, y, vx: (Math.random() - 0.5) * 40, vy: -20 - Math.random() * 30, life: 0.5, color: Math.random() < 0.5 ? '#e0895c' : '#c1582f' })
       }
     }
-    if (mix <= 0) game = null
+    if (mix <= 0 && !tennisOn) game = null
     shake = Math.max(0, shake - dt)
     for (const r of rooms.values()) { r.lit += (r.litTo - r.lit) * Math.min(1, k * 3); r.open += (r.openTo - r.open) * Math.min(1, k * 4) }
     for (const a of actors.values()) {
       if (a.bubble && a.bubble.until < now) a.bubble = null
       if (free) think(a, k)
       // Quien tiene el cursor encima se detiene a mirarte; quien corre a su puesto va al doble.
-      let left = free && a.id === lookId ? 0 : 46 * k * (a.mind.rally === 2 ? 2.2 : 1)
+      // El partido no espera a la velocidad de la producción: los tres van y vuelven a paso ligero.
+      const brisk = isTennis(a)
+      let left = free && a.id === lookId && !brisk ? 0 : brisk ? 46 * dt * 1.9 : 46 * k * (a.mind.rally === 2 ? 2.2 : 1)
       while (a.queue.length && left > 0) {
         const q = a.queue[0], p = q.pts[0]
         if (!p) { q.done?.(); a.queue.shift(); continue }
@@ -462,7 +504,7 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
         if (dist <= left) { a.x = p.x; a.y = p.y; q.pts.shift(); left -= dist } else { a.x += (dx / dist) * left; a.y += (dy / dist) * left; left = 0 }
       }
     }
-    if (tennisOn) followGame()
+    if (match === 'playing') followGame()
     for (const p of particles) { p.x += p.vx * k; p.y += p.vy * k; p.vy += 160 * k; p.life -= k }
     particles = particles.filter((p) => p.life > 0)
     for (const f of floats) { f.y -= 10 * k; f.life -= k }
@@ -534,13 +576,13 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
   }
 
   function drawDoor(c: C, r: Room) {
-    if (!r.index) return
-    const d = doorRect(r), closed = 1 - r.open
+    // La puerta del Mando siempre está abierta. Las que cruzan los tenistas se abren mientras van o vuelven.
+    const d = doorRect(r), closed = !r.index || (r.index === 1 && (match === 'going' || match === 'leaving')) ? 0 : 1 - r.open
     R(c, r.floor[0], d.x, d.y, d.w, d.h)
     if (d.w > d.h) R(c, '#8a623d', d.x, d.y, Math.round(d.w * closed), d.h)
     else R(c, '#8a623d', d.x, d.y, d.w, Math.round(d.h * closed))
     const lx = d.w > d.h ? d.x - 5 : d.x + (r.door === 'east' ? -4 : 7), ly = d.w > d.h ? d.y - 2 : d.y - 5
-    R(c, INK, lx - 1, ly - 1, 5, 5); R(c, r.approved ? '#7be29a' : '#d6453d', lx, ly, 3, 3)
+    R(c, INK, lx - 1, ly - 1, 5, 5); R(c, r.approved || !r.index ? '#7be29a' : '#d6453d', lx, ly, 3, 3)
   }
 
   const CAFE_FLOOR = ['#c7a27a', '#bd986f'], CAFE_ACCENT = '#e86f6f'
@@ -577,11 +619,11 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
     // plantas en las esquinas de abajo
     for (const px of [18, 196]) { R(c, '#a8623a', ox + px - 4, 332, 9, 6); R(c, '#3f9d5a', ox + px - 6, 322, 13, 11); R(c, '#56c273', ox + px - 3, 317, 7, 7) }
   }
-  /** Las dos puertas de la cafetería: cerradas con producción en marcha, abiertas en modo libre. */
+  /** Las dos puertas de la cafetería: cerradas con producción en marcha, abiertas en modo libre. Con partido se abren las dos: dan a la gradería. */
   function drawCafeDoors(c: C) {
     for (const y of [130, 306]) {
       R(c, CAFE_FLOOR[0], CAFE_X - 3, y, 6, 30)
-      if (!free) R(c, '#8a623d', CAFE_X - 3, y, 6, 30)
+      if (!free && match === 'off') R(c, '#8a623d', CAFE_X - 3, y, 6, 30)
     }
   }
 
@@ -629,7 +671,7 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
     c.fillStyle = b.bad ? '#8f1d18' : INK; c.fillText(b.text, x + 4, y + 2)
   }
 
-  /** La cancha se descubre con un telón circular que nace en la estatua. */
+  /** La cancha se descubre con un telón circular que nace en el centro de la cafetería. */
   function drawCourt(c: C, t: number) {
     if (mix <= 0 || !game) return
     const lead = actors.get(PLAYERS[0]), manager = actors.get(PLAYERS[1]), orch = actors.get('orchestrator')
@@ -637,24 +679,26 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
     const ease = mix * mix * (3 - 2 * mix)
     c.save()
     c.beginPath(); c.rect(ROOM.x, ROOM.y, ROOM.w, ROOM.h); c.clip()
-    c.beginPath(); c.arc(STATUE.x, STATUE.y - 12, ease * 250, 0, Math.PI * 2); c.clip()
-    const f = lead.frames, m = manager.frames
-    game.draw(c, t, [{ idle: f.back, stepA: f.backA, stepB: f.backB }, m], () => { if (orch) c.drawImage(orch.frames.idle, Math.round(game!.umpire.x) - 8, Math.round(game!.umpire.y) - 21) })
+    c.beginPath(); c.arc(CENTER.x, CENTER.y, ease * 200, 0, Math.PI * 2); c.clip()
+    const f = lead.frames, m = manager.frames, playing = match === 'playing'
+    game.draw(c, t, [{ idle: f.back, stepA: f.backA, stepB: f.backB }, m], () => { if (orch) c.drawImage(orch.frames.idle, Math.round(game!.umpire.x) - 8, Math.round(game!.umpire.y) - 21) }, playing)
     // Quien espera una decisión sigue avisando, aunque esté jugando.
-    if (lead.state === 'blocked' && !lead.bubble) { const b = Math.floor(t * 4) % 2, x = Math.round(lead.x), y = Math.round(lead.y); R(c, '#1a1420', x - 2, y - 33 - b, 4, 10); R(c, '#ff5a52', x - 1, y - 32 - b, 2, 5); R(c, '#ff5a52', x - 1, y - 26 - b, 2, 2) }
+    if (playing && lead.state === 'blocked' && !lead.bubble) { const b = Math.floor(t * 4) % 2, x = Math.round(lead.x), y = Math.round(lead.y); R(c, '#1a1420', x - 2, y - 33 - b, 4, 10); R(c, '#ff5a52', x - 1, y - 32 - b, 2, 5); R(c, '#ff5a52', x - 1, y - 26 - b, 2, 2) }
     c.restore()
     if (mix < 1) return
-    // Con la cancha completa, la pared también cambia: rótulo, marcador y botón de vuelta.
+    // Con la cancha completa, la pared de la cafetería también cambia: rótulo, marcador (sobre la pizarra) y botón de vuelta.
     c.font = '7px "Pixelify Sans", monospace'; c.textBaseline = 'top'
-    const label = 'Cancha central', lw = Math.ceil(c.measureText(label).width)
-    R(c, '#2a3350', 6, 5, 80, 16); R(c, INK, 8, 7, lw + 8, 12); R(c, '#c1582f', 8, 18, lw + 8, 1); c.fillStyle = '#efe6d0'; c.fillText(label, 12, 9)
-    R(c, INK, 90, 5, 76, 24); R(c, '#0f1a30', 92, 7, 72, 20)
+    const label = 'Cancha central', lw = Math.ceil(c.measureText(label).width), wx = CAFE_X
+    // La pared se repinta entera: la cafetera asomaba sobre ella.
+    R(c, '#2a3350', wx + 3, 3, RW - 6, 23); R(c, '#222a44', wx + 3, 26, RW - 6, 6); R(c, '#c1582f', wx + 3, 32, RW - 6, 2)
+    R(c, '#2a3350', wx + 6, 5, 76, 16); R(c, INK, wx + 8, 7, lw + 8, 12); R(c, '#c1582f', wx + 8, 18, lw + 8, 1); c.fillStyle = '#efe6d0'; c.fillText(label, wx + 12, 9)
+    R(c, INK, wx + 84, 5, 76, 24); R(c, '#0f1a30', wx + 86, 7, 72, 20)
     game.board().forEach((row, i) => {
       const y = 9 + i * 9
-      if (row.serving) R(c, '#e9f24a', 94, y + 2, 2, 2)
-      c.fillStyle = i ? '#8fb8ff' : '#ff9d96'; c.fillText(row.name, 98, y)
-      c.fillStyle = '#efe6d0'; c.fillText(`${row.sets} ${row.games}`, 136, y)
-      c.fillStyle = '#f2b632'; c.fillText(row.points, 152, y)
+      if (row.serving) R(c, '#e9f24a', wx + 88, y + 2, 2, 2)
+      c.fillStyle = i ? '#8fb8ff' : '#ff9d96'; c.fillText(row.name, wx + 92, y)
+      c.fillStyle = '#efe6d0'; c.fillText(`${row.sets} ${row.games}`, wx + 130, y)
+      c.fillStyle = '#f2b632'; c.fillText(row.points, wx + 146, y)
     })
     const hot = world.hot === 'exit'
     R(c, INK, EXIT.x, EXIT.y, EXIT.w, EXIT.h); R(c, hot ? '#f2b632' : '#efe6d0', EXIT.x + 1, EXIT.y + 1, EXIT.w - 2, EXIT.h - 3); R(c, hot ? '#c08a14' : '#b9ae93', EXIT.x + 1, EXIT.y + EXIT.h - 2, EXIT.w - 2, 1)
@@ -686,13 +730,13 @@ export function createWorld(scheme: SchemeT, calm = false, free = false) {
     for (const r of rooms.values()) drawDoor(c, r)
     drawCafeDoors(c)
     const items: { y: number; f: () => void }[] = []
+    // La cancha es piso: va debajo de todos. A los tres, mientras juegan, los dibuja el partido.
+    drawCourt(c, t)
     for (const a of actors.values()) {
-      if (mix >= 1 && a.room.index === 0) continue
       items.push({ y: a.seat.y + 1, f: () => drawDesk(c, a, t) })
-      items.push({ y: a.y, f: () => drawActor(c, a, t, a.id === selectedId) })
+      if (!(match === 'playing' && TRIO.includes(a.id))) items.push({ y: a.y, f: () => drawActor(c, a, t, a.id === selectedId) })
     }
     items.sort((p, q) => p.y - q.y).forEach((i) => i.f())
-    drawCourt(c, t)
     drawStatue(c, t)
     // luz: las salas que aún no arrancan quedan a oscuras; los monitores encendidos iluminan
     for (const r of rooms.values()) if (r.lit < 0.99) R(c, `rgba(8,11,26,${(0.42 * (1 - r.lit)).toFixed(3)})`, r.ox, r.oy, RW, RH)
