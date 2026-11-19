@@ -981,7 +981,7 @@ export function createEngine(opts: {
       if (list.length >= 200) throw new Error('Esta producción ya tiene muchos comentarios. Escríbele directamente a tu contacto en Pana Films.')
       await files.write(`${share.projectId}/${FEEDBACK}`, JSON.stringify([...list, note]))
     })
-    await emit(share.projectId, 'client.feedback', { kind, about: note.about, target: note.target, name: note.name, text })
+    await emit(share.projectId, 'client.feedback', { id: note.id, kind, about: note.about, target: note.target, name: note.name, text })
     return { ok: true }
   }
 

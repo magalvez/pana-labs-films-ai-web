@@ -10,13 +10,14 @@ import { createFinance } from './finance.ts'
 import { migrate, type Exec } from './migrate.ts'
 import { commercial } from './schemes/commercial.ts'
 import { pgDb } from './store.ts'
+import { createStudio, studioNotice } from './studio.ts'
 import { createTelegram } from './telegram.ts'
 import { createUsers } from './users.ts'
 
 // Recorrido completo por la API, como lo haría el navegador: de crear el proyecto con exploración a la entrega,
 // una mejora posterior y la rentabilidad. Postgres embebido con las migraciones reales, agentes simulados con
 // archivos de muestra hechos con ffmpeg de verdad, y Telegram con una red falsa. No llama a ningún proveedor.
-// ponytail: el cableado de avisos copia el de server/index.ts (que no se puede importar porque arranca el servidor).
+// El estudio y los avisos de Telegram se arman con las mismas piezas que el servidor (server/studio.ts).
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])
 
@@ -43,29 +44,15 @@ test('recorrido completo: exploración, cinco etapas con aprobaciones, Telegram,
   const users = createUsers({ db, owners: [OWNER], identity: { create: async () => {}, remove: async () => {} } })
   const sent: { method: string; body: any }[] = []
   const request = (async (url: string, init: any) => { sent.push({ method: String(url).split('/').pop()!, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: { username: 'PanaBot' } })) }) as unknown as typeof fetch
-  const texts = () => sent.filter((s) => s.method === 'sendMessage').map((s) => s.body.text as string)
+  const texts = () => sent.filter((s) => s.method === 'sendMessage' || s.method === 'editMessageText').map((s) => s.body.text as string)
 
   const engine = createEngine({
     db, files, schemes: { commercial }, explorer: simExplorer(),
     runner: simRunner({ rejectOnce: ['production'] }),
     onEvent: (projectId, type, data) => void notice(projectId, type, data).catch((err) => assert.fail(`aviso: ${err.message}`)),
   })
-  async function stillWaiting(projectId: string, stage: string) {
-    const p = await engine.getProject(projectId)
-    if (p.status !== 'waiting_human' || p.currentStage !== stage) throw new Error('ese aviso ya no vale')
-  }
-  const telegram = createTelegram({
-    db, token: 't', roleOf: (email) => users.roleOf(email), request,
-    approve: async (projectId, stage) => { await stillWaiting(projectId, stage); await engine.decide(projectId, { approve: true }); return 'Aprobada.' },
-    sendBack: async (projectId, stage, _e, comment) => { await stillWaiting(projectId, stage); await engine.decide(projectId, { approve: false, comment }); return 'Devuelta.' },
-  })
-  async function notice(projectId: string, type: string, data: Record<string, any>) {
-    const status = type === 'project.status' ? data.status : null
-    if (type === 'client.feedback') return telegram.notify(`cliente: ${data.text ?? ''}`)
-    if (status === 'waiting_human') return telegram.notify(`espera ${(await engine.getProject(projectId)).currentStage}`, projectId, (await engine.getProject(projectId)).currentStage ?? undefined)
-    if (status === 'done') return telegram.notify('entregado')
-    if (status === 'failed') return telegram.notify(`falló: ${data.reason}`)
-  }
+  const telegram = createTelegram({ db, token: 't', studio: createStudio(engine, users), request })
+  const notice = studioNotice(telegram)
   const app = createApp({ engine, users, telegram, finance: createFinance(db), publicConfig: { supabaseUrl: 'u', supabaseAnonKey: 'k' }, auth: async (t) => (t === 'admin' ? { email: OWNER, role: 'admin' } : t === 'miembro' ? { email: MEMBER, role: 'member' } : null) })
 
   /** Una llamada como la del navegador. Devuelve estado y cuerpo; `as` elige quién llama. */
@@ -143,7 +130,7 @@ test('recorrido completo: exploración, cinco etapas con aprobaciones, Telegram,
   assert.equal((await call('POST', `/api/public/${mood.token}/feedback`, { kind: 'comment', text: 'Más luz', name: 'Ana' }, null)).status, 201)
   assert.equal((await call('GET', '/api/public/m-no-existe-000000000000', undefined, null)).status, 404)
   await settle(id, 'exploring')
-  assert.match(texts().at(-1)!, /cliente: Más luz/)
+  assert.match(texts().at(-1)!, /Ana comentó el moodboard.*Más luz/s)
   await ok('POST', `/api/projects/${id}/start`)
 
   // 6. Strategy: llega el aviso con botones y se aprueba desde Telegram.
@@ -151,16 +138,16 @@ test('recorrido completo: exploración, cinco etapas con aprobaciones, Telegram,
   const buttons = () => sent.filter((s) => s.body.reply_markup).at(-1)!.body.reply_markup.inline_keyboard[0].map((b: any) => b.callback_data)
   for (let n = 0; n < 100 && buttons()[0] !== `ok:${id}:strategy`; n++) await new Promise((r) => setTimeout(r, 10))
   assert.deepEqual(buttons(), [`ok:${id}:strategy`, `no:${id}:strategy`])
-  await telegram.handle({ update_id: 2, callback_query: { id: 'c', data: `ok:${id}:strategy`, message: { chat: { id: 7 } } } })
-  assert.equal(texts().at(-1), 'Aprobada.')
+  await telegram.handle({ update_id: 2, callback_query: { id: 'c', data: `ok:${id}:strategy`, message: { message_id: 1, chat: { id: 7 } } } })
+  assert.match(texts().at(-1)!, /Strategy aprobada.*Pre-production ya está en marcha/s)
 
   // 7. Pre-production: el botón viejo ya no vale; se devuelve por Telegram con una indicación y luego se aprueba con una referencia nueva.
   await settle(id, 'waiting_human', 'preproduction')
   await telegram.handle({ update_id: 3, callback_query: { id: 'c', data: `ok:${id}:strategy`, message: { chat: { id: 7 } } } })
-  assert.match(texts().at(-1)!, /No se pudo aprobar: ese aviso ya no vale/)
+  assert.match(texts().at(-1)!, /Ese aviso ya no vale/)
   await telegram.handle({ update_id: 4, callback_query: { id: 'c', data: `no:${id}:preproduction`, message: { chat: { id: 7 } } } })
   await telegram.handle({ update_id: 5, message: { chat: { id: 7 }, text: 'El storyboard necesita el producto en el plano 3' } })
-  assert.equal(texts().at(-1), 'Devuelta.')
+  assert.match(texts().at(-1)!, /Pre-production devuelta.*El storyboard necesita el producto/s)
   await new Promise((r) => setTimeout(r, 50))
   const again = await settle(id, 'waiting_human', 'preproduction')
   assert.ok(again.steps.some((s: any) => s.stage === 'preproduction' && s.version === 2), 'la devolución rehízo la etapa')
@@ -192,8 +179,8 @@ test('recorrido completo: exploración, cinco etapas con aprobaciones, Telegram,
   await ok('POST', `/api/projects/${id}/decision`, { approve: true })
   const done = await settle(id, 'done')
   assert.equal(done.currentStage, null)
-  for (let n = 0; n < 100 && texts().at(-1) !== 'entregado'; n++) await new Promise((r) => setTimeout(r, 10))
-  assert.equal(texts().at(-1), 'entregado')
+  for (let n = 0; n < 100 && !/Comercial entregado/.test(texts().at(-1)!); n++) await new Promise((r) => setTimeout(r, 10))
+  assert.match(texts().at(-1)!, /¡Comercial entregado!/)
 
   // 11. Lo que la pantalla enseña de una producción entregada: archivos, procedencia y costos.
   const assets = await ok('GET', `/api/projects/${id}/assets`)

@@ -12,7 +12,7 @@ export const STAND = 39
 // Arriba, contra la pared, la tribuna de fondo: dos filas y las vallas de publicidad. Debajo empieza la arcilla.
 export const NORTH = 46
 const ROWS = [6, 22], COLS = [55, 77, 99, 121, 143, 165, 187]
-const L = 714, R = 826, T = 108, B = 308, NET = 208, SVC = 48, CX = 770, ALLEY = 12
+const L = 720, R = 832, T = 108, B = 308, NET = 208, SVC = 48, CX = 776, ALLEY = 12
 const G = 90, RUN = 96, REACH_X = 9, REACH_Y = 18
 /** La silla del juez, en la gradería, a la altura de la red. */
 const CHAIR = ROOM.x + 21

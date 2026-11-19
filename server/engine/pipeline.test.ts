@@ -379,9 +379,21 @@ test('Telegram: se enlaza con un código de un solo uso y solo quien tiene acces
   const sent: { method: string; body: any }[] = []
   const request = (async (url: string, init: any) => { sent.push({ method: String(url).split('/').pop()!, body: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: { username: 'PanaBot' } })) }) as unknown as typeof fetch
   const decided: string[] = []
-  const access = new Set(['ana@example.com'])
-  const telegram = createTelegram({ db, token: 't', roleOf: async (e) => (access.has(e) ? 'member' : null), approve: async (p, st, e) => (decided.push(`ok ${p} ${st} ${e}`), 'Aprobada.'), sendBack: async (p, st, e, c) => (decided.push(`no ${p} ${st} ${c}`), 'Devuelta.'), request })
-  const texts = () => sent.filter((s) => s.method === 'sendMessage').map((s) => s.body.text as string)
+  const access = new Map<string, 'admin' | 'member'>([['ana@example.com', 'member']])
+  const card = { id: 'p_1', name: 'Café <Aurora>', status: 'waiting_human', reason: 'gate', spent: 10, cap: 40, at: 2, stage: { id: 'production', name: 'Production', gate: 'Tomas finales' }, stages: ['strategy', 'preproduction', 'production', 'postproduction', 'delivery'].map((id) => ({ id, label: id.slice(0, 4), name: id })) }
+  const studio = {
+    roleOf: async (e: string) => access.get(e) ?? null, card: async () => ({ ...card }), list: async () => [{ ...card }],
+    audit: async () => ({ approved: true, attempt: 1, issues: [], agents: 5, files: 9 }), delivered: async () => [{ agent: 'Editor', version: 2, files: ['cut.mp4'] }],
+    summary: async () => ({ minutes: 75, reworks: 1, totalUsd: 10, modelUsd: 8, generationUsd: 2, reworkUsd: 1, byStage: [{ name: 'Production', usd: 10 }] }),
+    approve: async (p: string, st: string, e: string) => { if (st !== 'production') throw Object.assign(new Error('avanzó'), { stale: true }); decided.push(`ok ${p} ${st} ${e}`) },
+    sendBack: async (p: string, st: string, _e: string, c: string) => void decided.push(`no ${p} ${st} ${c}`),
+    raise: async (p: string, n: number) => { decided.push(`up ${p} ${n}`); return { ...card, cap: 40 + n } }, cancel: async (p: string) => void decided.push(`cancel ${p}`), retry: async (p: string) => void decided.push(`retry ${p}`),
+    improve: async (p: string, st: string, t: string, b: number) => void decided.push(`improve ${p} ${st} ${b} ${t}`),
+    note: async (_p: string, n: string) => ({ id: n, kind: 'comment', about: 'pieza', name: 'Ana', text: 'El final más lento' }), resolve: async (p: string, n: string, s: string) => void decided.push(`note ${n} ${s}`),
+  }
+  const telegram = createTelegram({ db, token: 't', studio, request })
+  const texts = () => sent.filter((s) => s.method === 'sendMessage' || s.method === 'editMessageText').map((s) => s.body.text as string)
+  const press = (data: string, chat = 7, id = 1) => telegram.handle({ update_id: id, callback_query: { id: 'c', data, message: { message_id: 55, chat: { id: chat } } } })
   assert.deepEqual(await telegram.status('ana@example.com'), { enabled: true, linked: false })
   const { code, link } = await telegram.link('ana@example.com')
   assert.equal(link, `https://t.me/PanaBot?start=${code}`)
@@ -391,19 +403,54 @@ test('Telegram: se enlaza con un código de un solo uso y solo quien tiene acces
   assert.equal((await telegram.status('ana@example.com')).linked, true)
   await telegram.handle({ update_id: 3, message: { chat: { id: 8 }, text: `/start ${code}` } })
   assert.match(texts().at(-1)!, /no existe o ya venció/, 'el código no sirve dos veces')
-  await telegram.notify('Etapa lista', 'p_1', 'production')
-  assert.deepEqual(sent.at(-1)!.body.reply_markup.inline_keyboard[0].map((b: any) => b.callback_data), ['ok:p_1:production', 'no:p_1:production'])
-  await telegram.handle({ update_id: 4, callback_query: { id: 'c', data: 'ok:p_1:production', message: { chat: { id: 7 } } } })
-  await telegram.handle({ update_id: 5, callback_query: { id: 'c', data: 'no:p_1:production', message: { chat: { id: 7 } } } })
+  // El aviso de etapa lleva el nombre escapado, el recorrido, la barra de presupuesto y sus botones.
+  await telegram.announce('p_1')
+  const gate = sent.at(-1)!.body
+  assert.match(gate.text, /Café &lt;Aurora&gt;.*Production espera tu aprobación.*✅ stra.*🟡 prod.*▰▰▰▱/s)
+  assert.deepEqual(gate.reply_markup.inline_keyboard.flat().map((b: any) => b.callback_data), ['ok:p_1:production', 'no:p_1:production', 'ver:p_1'])
+  // Aprobar reescribe el mismo aviso; devolver pide el texto y luego devuelve.
+  await press('ok:p_1:production')
+  assert.deepEqual([sent.at(-1)!.method, sent.at(-1)!.body.message_id], ['editMessageText', 55])
+  assert.match(texts().at(-1)!, /aprobada/)
+  await press('no:p_1:production')
   await telegram.handle({ update_id: 6, message: { chat: { id: 7 }, text: 'Falta el producto en el plano 3' } })
+  assert.match(texts().at(-1)!, /devuelta.*Falta el producto/s)
   assert.deepEqual(decided, ['ok p_1 production ana@example.com', 'no p_1 production Falta el producto en el plano 3'])
+  // Un aviso viejo avisa que ya no vale, y un botón desconocido no hace nada.
+  await press('ok:p_1:strategy')
+  assert.match(texts().at(-1)!, /Ese aviso ya no vale/)
+  const quiet = sent.filter((s) => s.method !== 'answerCallbackQuery').length
+  await press('ejemplo')
+  assert.equal(sent.filter((s) => s.method !== 'answerCallbackQuery').length, quiet)
+  // El dinero es cosa de administradores: un miembro no sube el tope, no cancela ni pide mejoras.
+  for (const data of ['up:p_1:10', 'cx:p_1', 'cy:p_1', 'im:p_1']) { await press(data); assert.match(texts().at(-1)!, /solo lo puede hacer un administrador/) }
+  access.set('ana@example.com', 'admin')
+  await press('up:p_1:10')
+  assert.match(texts().at(-1)!, /Tope subido a \$50\.00/)
+  await press('up:p_1:999')
+  // Cancelar pide una segunda pulsación.
+  await press('cx:p_1')
+  assert.deepEqual(sent.at(-1)!.body.reply_markup.inline_keyboard[0].map((b: any) => b.callback_data), ['cy:p_1', 'cn:p_1'])
+  assert.ok(!decided.some((d) => d.startsWith('cancel')))
+  await press('cy:p_1')
+  // Mejora tras la entrega: etapa, texto y tope, en ese orden.
+  await press('im:p_1'); await press('is:p_1:postproduction')
+  await telegram.handle({ update_id: 9, message: { chat: { id: 7 }, text: 'Sube el volumen de la música al final' } })
+  await press('ib:p_1:10')
+  // El comentario del cliente, con la producción esperando decisión, devuelve la etapa.
+  await telegram.announce('p_1', { id: 'abc123', kind: 'comment', about: 'pieza', name: 'Ana', text: 'El final más lento' })
+  assert.deepEqual(sent.at(-1)!.body.reply_markup.inline_keyboard[0].map((b: any) => b.callback_data), ['fu:p_1:abc123', 'fd:p_1:abc123'])
+  await press('fu:p_1:abc123')
+  assert.deepEqual(decided.slice(2), ['up p_1 10', 'cancel p_1', 'improve p_1 postproduction 10 Sube el volumen de la música al final', 'no p_1 production El final más lento', 'note abc123 used'])
+  await telegram.handle({ update_id: 10, message: { chat: { id: 7 }, text: '/estado' } })
+  assert.match(texts().at(-1)!, /Tus producciones/)
   // Un chat sin enlazar, o de alguien que perdió el acceso, no decide ni recibe avisos.
-  await telegram.handle({ update_id: 7, callback_query: { id: 'c', data: 'ok:p_1:production', message: { chat: { id: 99 } } } })
+  await press('ok:p_1:production', 99)
   access.clear()
-  await telegram.handle({ update_id: 8, callback_query: { id: 'c', data: 'ok:p_1:production', message: { chat: { id: 7 } } } })
+  await press('ok:p_1:production')
   const before = sent.length
-  await telegram.notify('Otra etapa', 'p_1', 'production')
-  assert.deepEqual([decided.length, sent.length], [2, before])
+  await telegram.announce('p_1')
+  assert.deepEqual([decided.length, sent.length], [7, before])
 })
 
 test('la biblioteca de marca se guarda por cliente y llega a los agentes', async () => {
