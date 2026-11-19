@@ -13,6 +13,7 @@
     "typecheck": "tsc -p . && tsc -p web",
     "test": "node --test \"server/**/*.test.ts\"",
     "build:vercel": "node scripts/build-vercel.mjs",
+    "regression:auditors": "node --env-file-if-exists=.env server/regression.ts",
     "db:migrate": "node --env-file-if-exists=.env server/migrate.ts",
     "db:migrate:status": "node --env-file-if-exists=.env server/migrate.ts --status"
   },

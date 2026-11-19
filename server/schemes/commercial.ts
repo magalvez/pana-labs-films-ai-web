@@ -1,8 +1,10 @@
 import type { AgentDef, Scheme, ToolFamily } from '../engine/types.ts'
 
-const a = (id: string, name: string, ...deliverables: string[]): AgentDef => ({ id, name, deliverables })
+// Agentes que no leen el trabajo del anterior en su etapa: con el trabajo en paralelo activado corren a la vez que él.
+const ALONGSIDE = new Set(['world-location', 'product-fidelity', 'sound-music', 'performance-analyst'])
+const a = (id: string, name: string, ...deliverables: string[]): AgentDef => ({ id, name, deliverables, ...(ALONGSIDE.has(id) ? { alongside: true } : {}) })
 /** Agente con herramientas de generación o montaje. Lo que produce con ellas se suma a sus entregables fijos. */
-const t = (tools: ToolFamily[], id: string, name: string, ...deliverables: string[]): AgentDef => ({ id, name, deliverables, tools })
+const t = (tools: ToolFamily[], id: string, name: string, ...deliverables: string[]): AgentDef => ({ ...a(id, name, ...deliverables), tools })
 
 /** Esquema de comercial publicitario, según documentation/Pana Films Lab.docx. */
 export const commercial: Scheme = {
@@ -80,6 +82,3 @@ export const commercial: Scheme = {
     },
   ],
 }
-
-// Agentes que no leen el trabajo del anterior en su etapa: con el trabajo en paralelo activado corren a la vez que él.
-for (const id of ['world-location', 'product-fidelity', 'sound-music', 'performance-analyst']) commercial.stages.flatMap((s) => s.agents).find((a) => a.id === id)!.alongside = true

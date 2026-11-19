@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { priceList } from '../media/prices.ts'
 import { announce, kindOf, mediaTools } from './tools.ts'
 import type { AgentRun, AuditRun, Brand, Files, Input, Runner, Verdict } from './types.ts'
-import { readReferences } from './types.ts'
+import { TIMEOUT_MIN, readReferences } from './types.ts'
 import { DEFAULT_MODEL, MODELS, usdOf, type Usage } from './models.ts'
 
 const MAX_STEPS = 80
@@ -32,7 +32,7 @@ const RULES = `Reglas de trabajo:
 export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; mediaTimeoutMs?: number }): Runner {
   const client = new Anthropic()
   /** El límite llega de la configuración con cada ejecución; las opciones del runner mandan, para las pruebas. */
-  const limit = (media: boolean, fromRun?: number) => (media ? opts.mediaTimeoutMs : opts.timeoutMs) ?? fromRun ?? (media ? 60 : 15) * 60_000
+  const limit = (media: boolean, fromRun?: number) => (media ? opts.mediaTimeoutMs : opts.timeoutMs) ?? fromRun ?? (media ? TIMEOUT_MIN.media : TIMEOUT_MIN.text) * 60_000
   const pick = (model?: string) => (model && Object.hasOwn(MODELS, model) ? model : DEFAULT_MODEL)
   const role = (id: string) => readFileSync(join(opts.agentsDir, `${id}.md`), 'utf8')
   const brandNote = (brand: Brand | null) => {
@@ -161,7 +161,7 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       return { costUsd: 0, model }
     },
 
-    async runAuditor({ project, stage, deliverables, files, brand, say, assets, spend, signal, model, timeoutMs, request }: AuditRun): Promise<Verdict> {
+    async runAuditor({ project, stage, deliverables, files, brand, say, assets, spend, signal, model, timeoutMs, request, previous }: AuditRun): Promise<Verdict> {
       const stop: Stop = { controller: new AbortController() }
       let used = 0
       const before = project.spent
@@ -203,7 +203,10 @@ export function claudeRunner(opts: { agentsDir: string; timeoutMs?: number; medi
       const prompt = `Proyecto: ${project.name}\n\nBrief del cliente:\n${project.brief}${brandNote(brand)}${await refNote(files, project.id)}\n\nPresupuesto del proyecto: tope de $${project.budget_cap.toFixed(2)}, gastado $${project.spent.toFixed(2)}. Estas cifras son las del sistema y mandan sobre las que digan los documentos.\n\nEntregables de la etapa ${stage.name}:\n${await describe(files, project.id, deliverables)}\n\nAgentes de la etapa y lo que cada uno puede hacer:\n${stage.agents.map((a) => `- ${a.id}: escribe ${a.deliverables.join(', ')}${a.tools?.length ? `; herramientas: ${a.tools.join(', ')}` : '; sin herramientas de generación ni montaje'}`).join('\n')}`
       // Con una mejora pedida sobre la pieza ya entregada, el auditor no juzga: decide quién de su etapa rehace qué.
       const ask = request ? `\n\nESTA VEZ NO AUDITAS: REPARTES UNA MEJORA. La pieza ya se entregó y la persona que dirige el proyecto pide esto sobre tu etapa:\n«${request}»\nLee los entregables que haga falta y decide qué agente de tu etapa debe rehacer o actualizar qué. Llama a submit_verdict con approved en false y un problema por cada agente que deba trabajar, con la instrucción exacta y los archivos que debe cambiar. No incluyas a quien no tenga nada que cambiar, y pide solo lo que cada agente puede hacer con sus herramientas.` : ''
-      await loop(system, prompt + ask, [readTool(files, project.id), verdictTool, ...media], say, limit(true, timeoutMs), stop, signal, async (usd, use) => { used += usd; await spend(usd, use) }, pick(model))
+      // 12. En un reintento, el auditor ve lo que él mismo pidió: sin eso no puede "comprobar primero lo anterior".
+      const nameOf = (id: string) => stage.agents.find((a) => a.id === id)?.name ?? id
+      const again = previous && !request ? `\n\nTU VEREDICTO ANTERIOR (intento ${previous.attempt}) devolvió esto:\n${previous.issues.map((i) => `- ${nameOf(i.agent)}: ${i.problem}`).join('\n')}\nEmpieza por comprobar que cada punto quedó resuelto. Lo que entonces no objetaste ya lo diste por bueno: no lo rechaces ahora, salvo que el arreglo lo haya roto.` : ''
+      await loop(system, prompt + again + ask, [readTool(files, project.id), verdictTool, ...media], say, limit(true, timeoutMs), stop, signal, async (usd, use) => { used += usd; await spend(usd, use) }, pick(model))
       if (!verdict) throw new Error(`${stage.auditor.name} terminó sin emitir veredicto.`)
       return { ...verdict, costUsd: 0 }
     },

@@ -185,3 +185,9 @@ audio.media { background: none; }
 /* Cerca del tope la barra avisa en ámbar. */
 .budget.near progress::-webkit-progress-value { background: var(--amber); }
 .budget.near progress::-moz-progress-bar { background: var(--amber); }
+
+/* Referencias plegadas: el panel de decisión enseña primero lo que hay que decidir. */
+.refs-fold { margin: 12px 0 0; max-width: 70ch; }
+.refs-fold > summary { cursor: pointer; font-family: var(--pixel); font-size: 16px; padding: 6px 0; }
+.refs-fold > summary:hover { text-decoration: underline; }
+.refs-fold .brand-files.refs { margin-top: 6px; }

@@ -92,6 +92,9 @@ export type NewAsset = Omit<Asset, 'createdAt'>
 /** `dir` es el prefijo de ruta de la versión vigente de ese agente. */
 export type Input = { stage: string; agent: string; dir: string }
 
+/** Minutos que puede durar una ejecución si la configuración no dice otra cosa: solo texto, o con generación y revisión de medios. */
+export const TIMEOUT_MIN = { text: 15, media: 60 }
+
 export type AgentRun = {
   project: Project
   /** Modelo de Claude elegido para este agente en la configuración. Sin él, el de por defecto. */
@@ -125,6 +128,8 @@ export type AuditRun = {
   project: Project
   /** Mejora que pide la persona sobre una etapa ya aprobada: el auditor no audita, reparte el trabajo. */
   request?: string
+  /** Lo que este auditor devolvió en su intento anterior sobre la misma etapa, para que compruebe eso primero y no cambie de criterio. */
+  previous?: { attempt: number; issues: { agent: string; problem: string }[] }
   model?: string
   timeoutMs?: number
   stage: StageDef

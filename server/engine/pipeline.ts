@@ -3,12 +3,12 @@ import { DEFAULT_IMAGE, DEFAULT_VIDEO, IMAGE_MODELS, VIDEO_MODELS, imageModel } 
 import { ASPECTS, type Aspect, type Explorer } from '../explore.ts'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { plainReporter, type Reporter } from '../report.ts'
-import { brandDir, readReferences, type AgentDef, type Asset, type Brand, type Db, type Ev, type Files, type Input, type NewAsset, type Project, type Runner, type Scheme, type StageDef } from './types.ts'
+import { TIMEOUT_MIN, brandDir, readReferences, type AuditRun, type AgentDef, type Asset, type Brand, type Db, type Ev, type Files, type Input, type NewAsset, type Project, type Runner, type Scheme, type StageDef } from './types.ts'
 
 export type Board = { id: string; title: string; prompt: string; note: string; aspect: Aspect; withProduct: boolean; images: { file: string; selected: boolean }[] }
 export type Exploration = { idea: string; boards: Board[] }
 export type Settings = { humanReview: boolean; simulation: boolean; models: Record<string, string>; maxAuditRetries: number; textTimeoutMin: number; mediaTimeoutMin: number; defaultBudget: number; imageModel: string; videoModel: string; parallelAgents: boolean }
-const DEFAULTS: Settings = { humanReview: true, simulation: true, models: {}, maxAuditRetries: 2, textTimeoutMin: 15, mediaTimeoutMin: 60, defaultBudget: 50, imageModel: DEFAULT_IMAGE, videoModel: DEFAULT_VIDEO, parallelAgents: false }
+const DEFAULTS: Settings = { humanReview: true, simulation: true, models: {}, maxAuditRetries: 2, textTimeoutMin: TIMEOUT_MIN.text, mediaTimeoutMin: TIMEOUT_MIN.media, defaultBudget: 50, imageModel: DEFAULT_IMAGE, videoModel: DEFAULT_VIDEO, parallelAgents: false }
 
 type StepRow = { stage: string; agent: string; version: number; status: 'done' | 'rejected'; feedback: string | null; model: string | null }
 type StageRow = { stage: string; status: 'working' | 'audited' | 'escalated' | 'approved'; attempts: number }
@@ -295,13 +295,14 @@ export function createEngine(opts: {
     }
   }
 
-  async function audit(p: Project, scheme: Scheme, stage: StageDef, row: StageRow, latest: Map<string, StepRow>) {
+  /** Una pasada del auditor de la etapa: para auditar, o con `request` para repartir una mejora. Deja registrado lo que costó. */
+  async function askAuditor(p: Project, scheme: Scheme, stage: StageDef, latest: Map<string, StepRow>, extra: Pick<AuditRun, 'request' | 'previous'> = {}) {
     const auditor = stage.auditor.id
     await emit(p.id, 'audit.started', { stage: stage.id, auditor })
     live.set(p.id, p)
     const cfg = await getSettings()
     const verdict = await runner.runAuditor({
-      project: p, stage, files, brand: await brandOf(p),
+      project: p, stage, files, brand: await brandOf(p), ...extra,
       model: cfg.models[auditor], timeoutMs: cfg.mediaTimeoutMin * 60_000,
       deliverables: inputsFor(p.id, latest, scheme, stage).filter((i) => i.stage === stage.id),
       say: (text) => chatter(p.id, stage.id, auditor, text),
@@ -310,6 +311,13 @@ export function createEngine(opts: {
       signal: aborts.get(p.id)!.signal,
     })
     await addCost(p.id, stage.id, auditor, verdict.costUsd)
+    return { verdict, cfg, auditor }
+  }
+
+  async function audit(p: Project, scheme: Scheme, stage: StageDef, row: StageRow, latest: Map<string, StepRow>) {
+    // En un reintento el auditor recibe su último rechazo de esta etapa.
+    const last = row.attempts > 0 ? (await db("SELECT data FROM events WHERE project_id = ? AND type = 'audit.verdict' ORDER BY id DESC LIMIT 30", p.id)).map((r) => JSON.parse(r.data)).find((d) => d.stage === stage.id && !d.approved && !d.improvement) : null
+    const { verdict, cfg, auditor } = await askAuditor(p, scheme, stage, latest, last ? { previous: { attempt: Number(last.attempt) || row.attempts, issues: last.issues ?? [] } } : {})
     // Un rechazo sin agente válido señalado devuelve el trabajo a toda la etapa.
     const known = verdict.issues.filter((i) => stage.agents.some((a) => a.id === i.agent))
     const issues = verdict.approved ? [] : known.length ? known : stage.agents.map((a) => ({ agent: a.id, problem: verdict.issues[0]?.problem ?? 'El auditor rechazó la etapa sin detalle' }))
@@ -934,20 +942,7 @@ export function createEngine(opts: {
     const p = await project(id)
     if (p.status !== 'running') return
     if (stage) {
-      const auditor = stage.auditor.id
-      const [latest, cfg] = await Promise.all([latestSteps(id), getSettings()])
-      await emit(id, 'audit.started', { stage: stage.id, auditor })
-      live.set(id, p)
-      const verdict = await runner.runAuditor({
-        project: p, stage, files, brand: await brandOf(p), request: req.text,
-        model: cfg.models[auditor], timeoutMs: cfg.mediaTimeoutMin * 60_000,
-        deliverables: inputsFor(id, latest, scheme, stage).filter((i) => i.stage === stage.id),
-        say: (text) => chatter(id, stage.id, auditor, text),
-        assets: () => listAssets(id),
-        spend: (usd, use) => addCost(id, stage.id, auditor, usd, use),
-        signal: aborts.get(id)!.signal,
-      })
-      await addCost(id, stage.id, auditor, verdict.costUsd)
+      const { verdict, auditor } = await askAuditor(p, scheme, stage, await latestSteps(id), { request: req.text })
       // Sin reparto (en simulación, o si el auditor no señaló a nadie), la mejora va a toda la etapa.
       const known = verdict.issues.filter((i) => stage.agents.some((a) => a.id === i.agent))
       const issues = known.length ? known : stage.agents.map((a) => ({ agent: a.id, problem: req.text as string }))
@@ -1030,7 +1025,14 @@ export function createEngine(opts: {
     return { ...head, report: await clientReport(p.id), videos: await clientVideos(p.id), moodboard: { idea: '', boards: [], paths: {} as Record<string, string> } }
   }
 
-  return { advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listReferences, addReference, getExploration, suggestExploration, saveExploration, generateExploration, selectExploration, startProduction, shareMoodboard, requestImprovement, addClientFeedback, listClientFeedback, resolveClientFeedback, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
+  /** Lo que recibiría el auditor de una etapa, sin ejecutarlo. Lo usa la regresión con defectos sembrados. */
+  async function auditCase(id: string, stageId: string) {
+    const p = await project(id), scheme = schemes[p.scheme], stage = scheme.stages.find((s) => s.id === stageId)
+    if (!stage) throw new Error('Esa etapa no existe')
+    return { project: p, stage, brand: await brandOf(p), deliverables: inputsFor(id, await latestSteps(id), scheme, stage).filter((i) => i.stage === stage.id), assets: () => listAssets(id) }
+  }
+
+  return { auditCase, advance, resumeAll, createProject, getProject, listProjects, listBrands, brandByName, addBrandAsset, listReferences, addReference, getExploration, suggestExploration, saveExploration, generateExploration, selectExploration, startProduction, shareMoodboard, requestImprovement, addClientFeedback, listClientFeedback, resolveClientFeedback, listAssets, overview, costReport, deleteProject, clientReport, createShare, listShares, revokeShare, openShare, decide, pause, resume, setBudget, cancel, rerun, restore, getSettings, setSettings, eventsAfter, files, schemes }
 }
 
 export type Engine = ReturnType<typeof createEngine>

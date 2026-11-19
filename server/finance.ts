@@ -83,12 +83,13 @@ export function createFinance(db: Db) {
   }
 
   /** Reparte en átomos (producción, mes, parte) lo que cuenta dentro del rango. Todo lo demás se suma desde aquí, así el informe cuadra. */
-  async function build(projects: any[], from = '0000-01-01', to = '9999-12-31') {
+  /** `only`: una sola producción; entonces las consultas se limitan a ella en vez de recorrer todos los registros. */
+  async function build(projects: any[], from = '0000-01-01', to = '9999-12-31', only?: string) {
     const fallback = await lastRate()
-    const rates = new Map((await db('SELECT DISTINCT ON (project_id) project_id, fx_cop_per_usd FROM finance_entries ORDER BY project_id, on_date DESC, created_at DESC')).map((r) => [r.project_id as string, Number(r.fx_cop_per_usd)]))
+    const rates = new Map((await db(`SELECT DISTINCT ON (project_id) project_id, fx_cop_per_usd FROM finance_entries ${only ? 'WHERE project_id = ?' : ''} ORDER BY project_id, on_date DESC, created_at DESC`, ...(only ? [only] : []))).map((r) => [r.project_id as string, Number(r.fx_cop_per_usd)]))
     const ids = new Set(projects.map((p) => p.id))
     // ponytail: trae todos los registros del rango y filtra por producción en memoria; con decenas de miles de registros, filtrar en SQL.
-    const entries = (await db('SELECT * FROM finance_entries WHERE on_date >= ? AND on_date <= ?', from, to)).map(entry).filter((e) => ids.has(e.projectId))
+    const entries = (await db(`SELECT * FROM finance_entries WHERE on_date >= ? AND on_date <= ?${only ? ' AND project_id = ?' : ''}`, from, to, ...(only ? [only] : []))).map(entry).filter((e) => ids.has(e.projectId))
     const atoms: Atom[] = []
     const inside = new Set<string>()
     for (const p of projects) {
@@ -129,7 +130,7 @@ export function createFinance(db: Db) {
     async forProject(id: string) {
       const p = await project(id)
       const entries = (await db('SELECT * FROM finance_entries WHERE project_id = ? ORDER BY on_date DESC, created_at DESC', id)).map(entry)
-      const { rows } = await build([p])
+      const { rows } = await build([p], undefined, undefined, id)
       return { entries, rate: await lastRate(), summary: rows[0] }
     },
 

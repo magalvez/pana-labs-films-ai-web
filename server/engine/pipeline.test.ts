@@ -12,6 +12,7 @@ import { pgDb } from '../store.ts'
 import { createEngine } from './pipeline.ts'
 import { simRunner as realSimRunner } from './simRunner.ts'
 import { createApp } from '../app.ts'
+import { DEFECT, seededAudit } from '../regression.ts'
 import { createTelegram } from '../telegram.ts'
 import { parseSuggestion, simExplorer } from '../explore.ts'
 import { createUsers } from '../users.ts'
@@ -912,4 +913,36 @@ test('el equipo: solo los administradores lo gestionan y nadie se queda fuera po
   assert.equal((await get('miembro', '/api/admin/projects')).status, 403)
   assert.deepEqual(await (await get('miembro', '/api/me')).json(), { email: 'm@pana.test', role: 'member' })
   assert.equal((await (await get('admin', '/api/admin/users')).json()).length, 2)
+})
+
+test('la regresión siembra un defecto solo en memoria y distingue al auditor que lo ve del que no', async () => {
+  const { engine, files } = await setup()
+  await engine.setSettings({ humanReview: false })
+  const id = await start(engine)
+  const before = JSON.stringify([...(await engine.eventsAfter(id)).map((e) => e.id), (await engine.getProject(id)).spent])
+  // Un auditor que lee los entregables y rechaza al autor del que trae el defecto; otro que aprueba sin mirar.
+  const careful: Runner = { ...simRunner(), runAuditor: async ({ stage, deliverables, files: f, previous }) => {
+    assert.equal(previous, undefined)
+    for (const d of deliverables) for (const name of stage.agents.find((a) => a.id === d.agent)!.deliverables) if (((await f.read(`${d.dir}/${name}`)) ?? '').includes('marca competidora')) return { approved: false, costUsd: 0.25, issues: [{ agent: d.agent, problem: 'Contradice el brief' }] }
+    return { approved: true, issues: [], costUsd: 0.25 }
+  } }
+  const seen = await seededAudit({ engine, runner: careful, projectId: id })
+  assert.equal(seen.length, 5)
+  assert.ok(seen.every((r) => r.caught && r.blamed && r.usd === 0.25), JSON.stringify(seen))
+  const blind = await seededAudit({ engine, runner: simRunner(), projectId: id, stages: ['strategy'] })
+  assert.deepEqual(blind.map((r) => [r.stage, r.caught]), [['strategy', false]])
+  // La producción real queda intacta: ni el archivo, ni eventos, ni gasto.
+  const c = await engine.auditCase(id, 'strategy')
+  assert.ok(!((await files.read(`${c.deliverables[0].dir}/${seen[0].file}`)) ?? '').includes(DEFECT.trim().slice(0, 20)))
+  assert.equal(JSON.stringify([...(await engine.eventsAfter(id)).map((e) => e.id), (await engine.getProject(id)).spent]), before)
+})
+
+test('en un reintento el auditor recibe lo que devolvió la vez anterior', async () => {
+  const got: unknown[] = []
+  let n = 0
+  const spy: Runner = { ...simRunner(), runAuditor: async (run) => { if (run.stage.id !== 'strategy') return { approved: true, issues: [], costUsd: 0 }; got.push(run.previous); return n++ ? { approved: true, issues: [], costUsd: 0 } : { approved: false, costUsd: 0, issues: [{ agent: run.stage.agents[0].id, problem: 'Falta el público objetivo' }] } } }
+  const { engine } = await setup(spy)
+  await engine.setSettings({ humanReview: false })
+  await start(engine)
+  assert.deepEqual(got, [undefined, { attempt: 1, issues: [{ agent: commercial.stages[0].agents[0].id, problem: 'Falta el público objetivo' }] }])
 })

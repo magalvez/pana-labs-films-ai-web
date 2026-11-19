@@ -395,8 +395,9 @@ function References({ pid, onAdded }: { pid: string; onAdded: (file: string) => 
     } finally { input.value = '' }
   }
   return (
+    <details className="refs-fold">
+    <summary>Fotos de referencia para los agentes{refs.length ? ` (${refs.length})` : ''}</summary>
     <fieldset className="brand-files refs" disabled={state === 'Subiendo…'}>
-      <legend>Fotos de referencia para los agentes</legend>
       <label>Qué deben tomar de la foto<input type="text" maxLength={500} placeholder="Por ejemplo: así debe verse la cocina del plano 2" value={note} onChange={(e) => setNote(e.target.value)} /></label>
       <label>Fotos (PNG o JPG, hasta 5 MB)<input type="file" multiple accept="image/png,image/jpeg" onChange={(e) => void send(e.currentTarget)} /></label>
       <p className="saved" role="status">{state || (refs.length ? `${refs.length} referencia${refs.length > 1 ? 's' : ''} en este proyecto.` : 'Escribe primero la indicación y luego elige la foto.')}</p>
@@ -404,6 +405,7 @@ function References({ pid, onAdded }: { pid: string; onAdded: (file: string) => 
         <li key={r.file}><Media path={`/projects/${pid}/files/${r.file}`} name={r.file} /><span>{r.note || r.file.split('/').pop()}</span></li>
       ))}</ul>}
     </fieldset>
+    </details>
   )
 }
 
