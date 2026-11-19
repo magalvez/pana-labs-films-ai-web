@@ -8,6 +8,7 @@ import { api, openFile, setOnExpired, setToken, upload } from './api'
 import { Media, mediaKind } from './media'
 import { Team } from './Team'
 import { Profit } from './Profit'
+import { Guide } from './Guide'
 import { Office } from './office/Office'
 import type { Ev, SchemeT, StageT } from './office/world'
 
@@ -24,8 +25,8 @@ function masterPath(events: Ev[]): string | null {
   return done ? `${done.data.stage}/motion-graphics/v${done.data.version}/master.mp4` : null
 }
 
-type View = 'studio' | 'producciones' | 'rentabilidad' | 'equipo' | 'configuracion'
-const viewOf = (hash: string): View => (hash === '#/producciones' ? 'producciones' : hash === '#/rentabilidad' ? 'rentabilidad' : hash === '#/equipo' ? 'equipo' : hash === '#/configuracion' ? 'configuracion' : 'studio')
+type View = 'studio' | 'producciones' | 'rentabilidad' | 'equipo' | 'configuracion' | 'guia'
+const viewOf = (hash: string): View => (hash === '#/producciones' ? 'producciones' : hash === '#/rentabilidad' ? 'rentabilidad' : hash === '#/equipo' ? 'equipo' : hash === '#/configuracion' ? 'configuracion' : hash === '#/guia' ? 'guia' : 'studio')
 
 const STATUS: Record<string, string> = { exploring: 'Explorando el look', running: 'En marcha', paused: 'En pausa', waiting_human: 'Espera tu decisión', done: 'Entregado', failed: 'Detenido', cancelled: 'Cancelado' }
 const usd = (n: number) => `$${n.toFixed(2)}`
@@ -155,7 +156,7 @@ export function App() {
   const stage = scheme.stages.find((s) => s.id === detail?.currentStage)
   // Las pantallas de administración solo existen para administradores; a los demás la dirección los devuelve al estudio.
   // Quien no administra solo tiene el estudio y sus propios avisos.
-  const screen: View = me?.role === 'admin' || view === 'configuracion' ? view : 'studio'
+  const screen: View = me?.role === 'admin' || view === 'configuracion' || view === 'guia' ? view : 'studio'
   return (
     <div className="app">
       <header className="slate">
@@ -169,12 +170,14 @@ export function App() {
               <button aria-current={screen === 'rentabilidad' ? 'page' : undefined} onClick={() => go('rentabilidad')}>Rentabilidad</button>
               <button aria-current={screen === 'equipo' ? 'page' : undefined} onClick={() => go('equipo')}>Equipo</button>
               <button aria-current={screen === 'configuracion' ? 'page' : undefined} onClick={() => go('configuracion')}>Configuración</button>
+              <button aria-current={screen === 'guia' ? 'page' : undefined} onClick={() => go('guia')}>Guía</button>
             </nav>
           )}
           {me?.role === 'member' && (
             <nav className="views" aria-label="Secciones">
               <button aria-current={screen === 'studio' ? 'page' : undefined} onClick={() => go('studio')}>Estudio</button>
               <button aria-current={screen === 'configuracion' ? 'page' : undefined} onClick={() => go('configuracion')}>Mis avisos</button>
+              <button aria-current={screen === 'guia' ? 'page' : undefined} onClick={() => go('guia')}>Guía</button>
             </nav>
           )}
           <div className="actions">
@@ -232,6 +235,7 @@ export function App() {
 
       {screen === 'producciones' && <Admin act={act} onOpen={(id) => { setPid(id); go('studio') }} />}
       {screen === 'rentabilidad' && <Profit act={act} />}
+      {screen === 'guia' && <Guide admin={me?.role === 'admin'} go={go} />}
       {screen === 'equipo' && me && <Team me={me.email} act={act} />}
       {screen === 'configuracion' && settings && <Config settings={settings} schemes={schemes} admin={me?.role === 'admin'} act={act} onChange={setSettings} />}
       {screen === 'studio' && detail?.status === 'exploring' && <Explore project={detail} admin={me?.role === 'admin'} act={act} onChanged={() => pollNow.current()} onRaise={() => budgetDialog.current?.showModal()} />}
