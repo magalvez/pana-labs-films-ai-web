@@ -315,9 +315,9 @@ export function createEngine(opts: {
   }
 
   async function audit(p: Project, scheme: Scheme, stage: StageDef, row: StageRow, latest: Map<string, StepRow>) {
-    // En un reintento el auditor recibe su último rechazo de esta etapa.
-    const last = row.attempts > 0 ? (await db("SELECT data FROM events WHERE project_id = ? AND type = 'audit.verdict' ORDER BY id DESC LIMIT 30", p.id)).map((r) => JSON.parse(r.data)).find((d) => d.stage === stage.id && !d.approved && !d.improvement) : null
-    const { verdict, cfg, auditor } = await askAuditor(p, scheme, stage, latest, last ? { previous: { attempt: Number(last.attempt) || row.attempts, issues: last.issues ?? [] } } : {})
+    // En un reintento el auditor recibe su veredicto anterior de esta etapa, si fue un rechazo: uno ya superado por una aprobación no cuenta.
+    const last = row.attempts > 0 ? (await db("SELECT data FROM events WHERE project_id = ? AND type = 'audit.verdict' ORDER BY id DESC LIMIT 30", p.id)).map((r) => JSON.parse(r.data)).find((d) => d.stage === stage.id) : null
+    const { verdict, cfg, auditor } = await askAuditor(p, scheme, stage, latest, last && !last.approved ? { previous: { attempt: Number(last.attempt) || row.attempts, issues: last.issues ?? [] } } : {})
     // Un rechazo sin agente válido señalado devuelve el trabajo a toda la etapa.
     const known = verdict.issues.filter((i) => stage.agents.some((a) => a.id === i.agent))
     const issues = verdict.approved ? [] : known.length ? known : stage.agents.map((a) => ({ agent: a.id, problem: verdict.issues[0]?.problem ?? 'El auditor rechazó la etapa sin detalle' }))

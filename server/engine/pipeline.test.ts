@@ -426,7 +426,12 @@ test('Telegram: se enlaza con un código de un solo uso y solo quien tiene acces
   // El dinero es cosa de administradores: un miembro no sube el tope, no cancela ni pide mejoras.
   for (const data of ['up:p_1:10', 'cx:p_1', 'cy:p_1', 'im:p_1']) { await press(data); assert.match(texts().at(-1)!, /solo lo puede hacer un administrador/) }
   access.set('ana@example.com', 'admin')
+  // Con la producción ya fuera de la pausa por tope, el botón de subirlo no vale; en pausa, sí.
   await press('up:p_1:10')
+  assert.match(texts().at(-1)!, /Ese aviso ya no vale/)
+  Object.assign(card, { status: 'paused', reason: 'budget' })
+  await press('up:p_1:10')
+  Object.assign(card, { status: 'waiting_human', reason: 'gate' })
   assert.match(texts().at(-1)!, /Tope subido a \$50\.00/)
   await press('up:p_1:999')
   // Cancelar pide una segunda pulsación.
@@ -445,6 +450,10 @@ test('Telegram: se enlaza con un código de un solo uso y solo quien tiene acces
   assert.deepEqual(decided.slice(2), ['up p_1 10', 'cancel p_1', 'improve p_1 postproduction 10 Sube el volumen de la música al final', 'no p_1 production El final más lento', 'note abc123 used'])
   await telegram.handle({ update_id: 10, message: { chat: { id: 7 }, text: '/estado' } })
   assert.match(texts().at(-1)!, /Tus producciones/)
+  // Desde un grupo no se decide nada, aunque el grupo estuviera enlazado.
+  const inGroup = decided.length
+  await telegram.handle({ update_id: 11, callback_query: { id: 'c', data: 'ok:p_1:production', message: { message_id: 55, chat: { id: 7, type: 'supergroup' } } } })
+  assert.equal(decided.length, inGroup)
   // Un chat sin enlazar, o de alguien que perdió el acceso, no decide ni recibe avisos.
   await press('ok:p_1:production', 99)
   access.clear()
@@ -452,6 +461,10 @@ test('Telegram: se enlaza con un código de un solo uso y solo quien tiene acces
   const before = sent.length
   await telegram.announce('p_1')
   assert.deepEqual([decided.length, sent.length], [7, before])
+  // Un chat es de una sola cuenta: enlazarlo a otra lo quita de la anterior.
+  const other = await telegram.link('leo@example.com')
+  await telegram.handle({ update_id: 11, message: { chat: { id: 7 }, text: `/start ${other.code}` } })
+  assert.deepEqual([(await telegram.status('ana@example.com')).linked, (await telegram.status('leo@example.com')).linked], [false, true])
 })
 
 test('la biblioteca de marca se guarda por cliente y llega a los agentes', async () => {

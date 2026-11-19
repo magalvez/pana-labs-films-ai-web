@@ -82,3 +82,6 @@ export const commercial: Scheme = {
     },
   ],
 }
+
+// Un id mal escrito en ALONGSIDE dejaría a ese agente sin correr en paralelo sin que nadie lo note.
+for (const id of ALONGSIDE) if (!commercial.stages.some((s) => s.agents.some((a) => a.id === id))) throw new Error(`ALONGSIDE nombra un agente que no existe: ${id}`)

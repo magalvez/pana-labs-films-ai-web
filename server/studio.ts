@@ -59,7 +59,8 @@ export function createStudio(engine: Engine, users: Pick<Users, 'roleOf'>): Stud
     cancel: (id) => engine.cancel(id),
     retry: (id) => engine.resume(id),
     improve: (id, stage, text, budget, email) => engine.requestImprovement(id, stage, text, budget, email),
-    async note(id, noteId) { return (await engine.listClientFeedback(id)).find((n) => n.id === noteId) ?? null },
+    // Solo un comentario pendiente: el botón que quedó en el chat de otra persona no devuelve la etapa por segunda vez.
+    async note(id, noteId) { return (await engine.listClientFeedback(id)).find((n) => n.id === noteId && n.status === 'new') ?? null },
     async resolve(id, noteId, status) { await engine.resolveClientFeedback(id, noteId, status) },
   }
 }

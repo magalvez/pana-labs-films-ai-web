@@ -5,7 +5,8 @@ import type { Files, Runner } from './engine/types.ts'
 // Regresión de auditores con defectos sembrados: se toma una producción ya hecha, se le planta un defecto evidente
 // en un entregable de cada etapa y se comprueba que el auditor de esa etapa lo rechaza y señala al agente correcto.
 // El defecto vive solo en memoria: la producción real no se toca, ni sus archivos, ni su gasto, ni sus eventos.
-// Con el auditor real cuesta dinero (una auditoría por etapa); `maxUsd` es lo máximo que cada una puede gastar.
+// Con el auditor real cuesta dinero (una auditoría por etapa). `maxUsd` corta las revisiones de medios de cada una
+// cuando lo gastado llega a esa cifra; los tokens del propio auditor no tienen tope y pueden pasarla.
 
 /** Contradice el brief en duración y en marca: cualquier auditor que lea el entregable debe rechazarlo. */
 export const DEFECT = '\n\n## Cambio de última hora\nPor decisión interna, la pieza final durará 4 minutos en vez de lo que pide el brief, y cerrará con el logotipo y el eslogan de la marca competidora en lugar de los del cliente.\n'
@@ -30,7 +31,11 @@ export async function seededAudit(o: { engine: Engine; runner: Runner; projectId
   const { engine, runner, projectId, maxUsd = 2, log = () => {} } = o
   const p = await engine.getProject(projectId)
   const out: SeededResult[] = []
-  for (const s of engine.schemes[p.scheme].stages) {
+  const all = engine.schemes[p.scheme].stages
+  // Una etapa mal escrita no puede acabar en una regresión vacía que pasa.
+  const unknown = (o.stages ?? []).filter((id) => !all.some((s) => s.id === id))
+  if (unknown.length) throw new Error(`Etapa desconocida: ${unknown.join(', ')}. Las etapas son: ${all.map((s) => s.id).join(', ')}`)
+  for (const s of all) {
     if (o.stages?.length && !o.stages.includes(s.id)) continue
     const c = await engine.auditCase(projectId, s.id)
     // El defecto va en el primer documento de texto que la etapa realmente entregó.
@@ -44,10 +49,12 @@ export async function seededAudit(o: { engine: Engine; runner: Runner; projectId
     log(`${s.name}: defecto sembrado en ${file} de ${agent.name}…`)
     try {
       const verdict = await runner.runAuditor({
-        // El tope simulado deja al auditor gastar como mucho `maxUsd` en revisar medios.
-        project: { ...c.project, budget_cap: c.project.spent + maxUsd }, stage: c.stage, deliverables: c.deliverables, brand: c.brand, assets: c.assets,
+        // El auditor ve el tope real de la producción, igual que cuando la auditó de verdad: un tope inventado le haría
+        // rechazar por presupuesto y parecería que vio el defecto. Solo se sube si ya no queda margen para revisar medios.
+        project: { ...c.project, budget_cap: Math.max(c.project.budget_cap, c.project.spent + maxUsd) }, stage: c.stage, deliverables: c.deliverables, brand: c.brand, assets: c.assets,
         files: overlay(engine.files, `${input.dir}/${file}`, original + DEFECT),
-        model: o.model?.(c.stage.auditor.id), say: () => {}, spend: async (n) => { usd += n }, signal: AbortSignal.timeout(30 * 60_000),
+        // El límite va como tiempo de la ejecución, no como cancelación: así el error dice que se agotó el tiempo y no que el proyecto se canceló.
+        model: o.model?.(c.stage.auditor.id), timeoutMs: 30 * 60_000, say: () => {}, spend: async (n) => { usd += n }, signal: new AbortController().signal,
       })
       result.caught = !verdict.approved
       result.blamed = verdict.issues.some((i) => i.agent === agent.id)
@@ -60,7 +67,7 @@ export async function seededAudit(o: { engine: Engine; runner: Runner; projectId
   return out
 }
 
-// Uso: npm run regression:auditors -- <id de producción> [etapa,etapa] [tope por auditoría en dólares]
+// Uso: npm run regression:auditors -- <id de producción> [etapa,etapa] [tope de revisión de medios por auditoría, en dólares]
 if (import.meta.main) {
   const [projectId, stages, cap] = process.argv.slice(2)
   if (!projectId) { console.error('Indica la producción: npm run regression:auditors -- <id de producción> [etapas separadas por coma] [tope por auditoría]\nEl id se ve en la dirección del estudio o en Producciones. Usa una producción real ya entregada.'); process.exit(1) }

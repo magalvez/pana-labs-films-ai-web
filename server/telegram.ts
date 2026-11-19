@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import type { Db } from './engine/types.ts'
 
-type Update = { update_id: number; message?: { chat: { id: number }; text?: string }; callback_query?: { id: string; data?: string; message?: { message_id?: number; chat: { id: number } } } }
+type Chat = { id: number; type?: string }
+type Update = { update_id: number; message?: { chat: Chat; text?: string }; callback_query?: { id: string; data?: string; message?: { message_id?: number; chat: Chat } } }
 type Role = 'admin' | 'member'
 type Btn = { text: string; callback_data: string }
 type Msg = { text: string; keys?: Btn[][] }
@@ -32,6 +33,7 @@ export type Studio = {
   cancel(id: string): Promise<unknown>
   retry(id: string): Promise<unknown>
   improve(id: string, stage: string, text: string, budget: number, email: string): Promise<unknown>
+  /** El comentario del cliente, solo si nadie lo ha usado ni descartado todavía. */
   note(id: string, noteId: string): Promise<Note | null>
   resolve(id: string, noteId: string, status: 'used' | 'dismissed'): Promise<void>
 }
@@ -56,7 +58,8 @@ const usd = (n: number) => `$${n.toFixed(2)}`
 const head = (c: Card) => `🎬 <b>${esc(c.name)}</b>`
 const bar = (c: Card) => { const n = Math.max(0, Math.min(10, Math.round((c.spent / (c.cap || 1)) * 10))); return `💰 ${'▰'.repeat(n)}${'▱'.repeat(10 - n)}  <b>${usd(c.spent)}</b> de ${usd(c.cap)}` }
 const track = (c: Card, mark: string) => c.stages.map((s, i) => `${i < c.at ? '✅' : i === c.at ? mark : '⚪️'} ${s.label}`).join('  ')
-const quote = (s: string) => `<blockquote>${esc(s)}</blockquote>`
+// Telegram rechaza un mensaje de más de 4096 caracteres y el aviso no llegaría: una cita larga se recorta.
+const quote = (s: string) => `<blockquote>${esc(s.length > 3000 ? `${s.slice(0, 3000)}…` : s)}</blockquote>`
 const clock = () => new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })
 const lasted = (min: number) => (min >= 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min} min`)
 const ICON: Record<string, string> = { waiting_human: '🟡', running: '▶️', paused: '⏸', failed: '🛑', done: '🏁', exploring: '🎨', cancelled: '✖️' }
@@ -168,9 +171,13 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
     if (!token) return
     const rows = await db('SELECT email, chat_id FROM telegram_links WHERE chat_id IS NOT NULL')
     const card = await studio.card(projectId)
+    // El aviso solo cambia con el rol: se arma una vez por rol, no una vez por persona.
+    const byRole = new Map<Role, Msg>()
     for (const r of rows) {
       const role = await studio.roleOf(r.email)
-      if (role) await say(r.chat_id, note ? noteMsg(card, note) : await stateMsg(card, role))
+      if (!role) continue
+      if (!byRole.has(role)) byRole.set(role, note ? noteMsg(card, note) : await stateMsg(card, role))
+      await say(r.chat_id, byRole.get(role)!)
     }
   }
 
@@ -186,7 +193,7 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
       const before = await studio.card(id)
       try { await studio.approve(id, arg, me.email) } catch (err: any) { if (err?.stale) await keysOnly(chat, msg); throw err }
       const c = await studio.card(id), name = before.stages.find((s) => s.id === arg)?.name ?? 'La etapa'
-      return edit(chat, msg, { text: `${head(c)}\n\n✅ <b>${esc(name)} aprobada</b>\n<i>Por ti, desde Telegram · ${clock()}</i>\n\n${track(c, '▶️')}\n\n${c.status === 'done' ? 'Era la última etapa.' : `${esc(c.stage?.name ?? 'La siguiente etapa')} ya está en marcha.`}` })
+      return edit(chat, msg, { text: `${head(c)}\n\n✅ <b>${esc(name)} aprobada</b>\n<i>Por ti, desde Telegram · ${clock()}</i>\n\n${track(c, '▶️')}\n\n${c.stage ? `${esc(c.stage.name)} ya está en marcha.` : 'Era la última etapa.'}` })
     }
     if (action === 'no') {
       const c = await studio.card(id), name = c.stages.find((s) => s.id === arg)?.name ?? 'la etapa'
@@ -202,6 +209,9 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
       adminOnly()
       const extra = Number(arg)
       if (!RAISES.includes(extra)) return
+      // Dos administradores con el mismo aviso no suben el tope dos veces: solo vale mientras siga en pausa por tope.
+      const now = await studio.card(id)
+      if (now.status !== 'paused' || now.reason !== 'budget') { await keysOnly(chat, msg); throw Object.assign(new Error('La producción ya no está en pausa por el tope. Mira su estado con /estado.'), { stale: true }) }
       const c = await studio.raise(id, extra)
       return edit(chat, msg, { text: `${head(c)}\n\n✅ <b>Tope subido a ${usd(c.cap)}</b>\n<i>Por ti, desde Telegram · ${clock()}</i>\n\n${track(c, '▶️')}\n\n${bar(c)}\n\nLa producción sigue donde quedó.` })
     }
@@ -223,7 +233,8 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
       adminOnly()
       const c = await studio.card(id), name = c.stages.find((s) => s.id === arg)?.name ?? 'la etapa'
       // Si la mejora nació de un comentario del cliente, el texto ya está: solo falta el tope.
-      const text = awaiting.get(chat)?.kind === 'improve' && awaiting.get(chat)!.projectId === id ? awaiting.get(chat)!.text : undefined
+      const prev = awaiting.get(chat)
+      const text = prev?.kind === 'improve' && prev.projectId === id && prev.until > Date.now() ? prev.text : undefined
       awaiting.set(chat, { kind: 'improve', projectId: id, stage: arg, text, until: Date.now() + WAIT_MS })
       if (text) return edit(chat, msg, { text: `${head(c)}\n\n✨ <b>Mejora en ${esc(name)}</b>\n${quote(text)}\n¿Cuánto se puede gastar en esta mejora? Se suma al tope.`, keys: budgetKeys(id) })
       return edit(chat, msg, { text: `${head(c)}\n\n✨ <b>¿Qué hay que mejorar en ${esc(name)}?</b>\nDescríbelo en un solo mensaje.`, keys: cancelKey })
@@ -239,7 +250,7 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
     }
     if (action === 'fu' || action === 'fd') {
       const [c, n] = await Promise.all([studio.card(id), studio.note(id, arg)])
-      if (!n) return edit(chat, msg, { text: '⚠️ <b>Ese comentario ya no existe</b>' })
+      if (!n) return edit(chat, msg, { text: '⚠️ <b>Ese comentario ya se atendió o ya no existe</b>' })
       const base = noteMsg(c, n).text
       if (action === 'fd') { await studio.resolve(id, n.id, 'dismissed'); return edit(chat, msg, { text: `${base}\n\n🗑 <i>Descartado · ${clock()}</i>` }) }
       if (c.status === 'waiting_human' && c.stage) {
@@ -250,7 +261,8 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
       if (c.status === 'done') {
         adminOnly()
         await studio.resolve(id, n.id, 'used')
-        awaiting.set(chat, { kind: 'improve', projectId: id, stage: '', text: n.text, until: Date.now() + WAIT_MS })
+        // El motor pide al menos 10 caracteres: un comentario más corto no sirve de texto y se le pide a la persona.
+        awaiting.set(chat, { kind: 'improve', projectId: id, stage: '', text: n.text.trim().length >= 10 ? n.text : undefined, until: Date.now() + WAIT_MS })
         await edit(chat, msg, { text: `${base}\n\n🛠 <i>Usado para pedir una mejora · ${clock()}</i>` })
         return say(chat, { text: `${head(c)}\n\n✨ <b>¿En qué etapa está el cambio?</b>\nSe rehace esa etapa y las siguientes; lo anterior no se toca.`, keys: [...c.stages.map((s) => [{ text: s.name, callback_data: `is:${id}:${s.id}` }]), cancelKey[0]] })
       }
@@ -259,14 +271,22 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
   }
 
   async function handle(u: Update) {
-    const chat = String(u.message?.chat.id ?? u.callback_query?.message?.chat.id ?? '')
+    const from = u.message?.chat ?? u.callback_query?.message?.chat
+    const chat = String(from?.id ?? '')
     if (!chat) return
+    // El permiso va con el chat, no con la persona: en un grupo, cualquiera heredaría el rol de quien lo enlazó.
+    if (from?.type && from.type !== 'private') {
+      if (u.callback_query) return void (await call('answerCallbackQuery', { callback_query_id: u.callback_query.id, text: 'Solo funciona en un chat privado con el bot.', show_alert: true }).catch(() => {}))
+      return /^\//.test(u.message?.text ?? '') ? say(chat, '🔒 <b>Solo en chat privado</b>\nPor seguridad, los avisos y las decisiones van en una conversación privada con el bot, no en grupos.') : undefined
+    }
     const text = u.message?.text?.trim() ?? ''
     const start = /^\/start\s+([A-F0-9]{12})$/i.exec(text)
     if (start) {
       const since = new Date(Date.now() - CODE_MINUTES * 60_000).toISOString()
       const [row] = await db('UPDATE telegram_links SET chat_id = ?, code = NULL, code_at = NULL WHERE code = ? AND code_at > ? RETURNING email', chat, start[1].toUpperCase(), since)
       if (!row) return say(chat, '⚠️ <b>Ese código no existe o ya venció</b>\nPide uno nuevo en Configuración.')
+      // Un chat es de una sola cuenta: si seguía enlazado a otra, el rol sería ambiguo y los avisos llegarían dos veces.
+      await db('UPDATE telegram_links SET chat_id = NULL WHERE chat_id = ? AND email <> ?', chat, row.email)
       return say(chat, { text: `🔗 <b>¡Chat enlazado!</b>\nQueda unido a <code>${esc(row.email)}</code> en Pana Films Lab.\n\nAquí te aviso cuando:\n🟡 una etapa espere tu aprobación\n⏸ se alcance el tope de presupuesto\n🛑 algo se detenga\n🏁 se entregue un comercial\n💬 un cliente opine`, keys: [[{ text: '📽 Ver mis producciones', callback_data: 'ls' }]] })
     }
     const me = await who(chat)
@@ -304,10 +324,12 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
   async function start() {
     if (!token) return
     let offset = 0
-    let warned = false
+    // El último fallo ya registrado: cada caída se anota una vez, no en cada reintento.
+    let warned: unknown = null
     for (;;) {
       try {
         const updates: Update[] = await call('getUpdates', { offset, timeout: 25, allowed_updates: ['message', 'callback_query'] }, 40_000)
+        warned = null
         for (const u of updates) {
           offset = u.update_id + 1
           await handle(u).catch((err) => console.error(`Telegram: no se pudo atender un mensaje: ${err.message}`))
@@ -315,7 +337,8 @@ export function createTelegram({ db, token, username, studio, request = fetch }:
       } catch (err: any) {
         if (err.status === 401) return console.error(`Avisos por Telegram apagados: ${err.message}. Revisa TELEGRAM_BOT_TOKEN.`)
         // Un 409 es normal unos segundos tras un reinicio (el sondeo anterior sigue abierto). Si persiste, otro servidor usa el mismo bot.
-        if (err.status === 409 && !warned) { warned = true; console.error(`Telegram: ${err.message}. Se sigue intentando; si no para, otro servidor está usando este bot.`) }
+        const key = err.status ?? err.message
+        if (key !== warned) { warned = key; console.error(`Telegram: ${err.message}. Se sigue intentando${err.status === 409 ? '; si no para, otro servidor está usando este bot' : ''}.`) }
         await sleep(err.status === 409 ? 30_000 : 5000)
       }
     }
