@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
+# El navegador de Remotion queda dentro de la imagen: si no, se descarga (96 MB) en el primer título tras cada reinicio.
+RUN node -e "import('@remotion/renderer').then((r) => r.ensureBrowser())"
 COPY . .
 RUN npm run build
 
