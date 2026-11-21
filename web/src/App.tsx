@@ -242,7 +242,10 @@ export function App() {
       <main hidden={screen !== 'studio' || detail?.status === 'exploring'}>
         <section className="stage-floor">
           {detail && <p className={`on-air ${detail.status}`} role="status">{detail.status === 'running' ? 'En el aire' : detail.status === 'done' ? 'Entregado' : detail.status === 'waiting_human' ? 'Te esperan en el plató' : 'Fuera del aire'}</p>}
-          <Office key={pid ?? 'empty'} scheme={scheme} events={events} replay={replay} selected={selected} onSelect={setSelected} onReplayEnd={endReplay} free={!pid} rally={rally} />
+          {/* En el teléfono la oficina se recorre deslizando, a un tamaño en que los agentes se distinguen y se pueden tocar. */}
+          <div className="office-pan">
+            <Office key={pid ?? 'empty'} scheme={scheme} events={events} replay={replay} selected={selected} onSelect={setSelected} onReplayEnd={endReplay} free={!pid} rally={rally} />
+          </div>
           {!projects.length && (
             <div className="empty">
               <h2>El estudio está a oscuras</h2>

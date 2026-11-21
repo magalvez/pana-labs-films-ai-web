@@ -38,7 +38,7 @@ dialog::backdrop { background: rgba(8, 11, 20, .72); backdrop-filter: blur(5px);
 .on-air.done { color: #7be29a; border-color: #3c8f58; }
 @keyframes lamp { 50% { box-shadow: 0 0 30px rgba(255, 90, 80, .8), inset 0 0 14px rgba(255, 90, 80, .35); } }
 .office { transition: box-shadow .8s; }
-.on-air.running + .office { box-shadow: 0 0 0 4px #0b0f1c, 0 0 0 6px var(--slate-line), 0 24px 80px rgba(63, 193, 176, .16); }
+.on-air.running + .office-pan .office { box-shadow: 0 0 0 4px #0b0f1c, 0 0 0 6px var(--slate-line), 0 24px 80px rgba(63, 193, 176, .16); }
 
 /* Decisión pendiente: sube desde abajo y su borde llama hasta que la atiendes. */
 .decision { animation: rise-in .4s cubic-bezier(.2, .8, .2, 1), call 2s 1s ease-in-out 3; }
@@ -136,3 +136,31 @@ dialog::backdrop { background: rgba(8, 11, 20, .72); backdrop-filter: blur(5px);
 .tg-waiting::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 8px; background: var(--amber); animation: tg-blink 1s steps(2) infinite; }
 @keyframes tg-blink { 50% { opacity: 0.2; } }
 @media (prefers-reduced-motion: reduce) { .tg-waiting::before { animation: none; } }
+
+/* Teléfono. La oficina va dentro de .office-pan: en pantallas anchas no existe para el diseño; en el teléfono es una tira que se desliza. */
+.office-pan { display: contents; }
+@media (max-width: 640px) {
+  button { min-height: 42px; }
+  .slate-row { padding: 10px 12px; gap: 10px; }
+  .slate h1 { font-size: 22px; }
+  /* Secciones y etapas en una sola fila que se desliza, en vez de partirse en varias. */
+  .views, .stages { flex-wrap: nowrap; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .views::-webkit-scrollbar, .stages::-webkit-scrollbar { display: none; }
+  .views button, .stages li { flex: none; white-space: nowrap; }
+  .views button { padding: 8px 14px; }
+  .stages li { padding: 8px 12px; }
+  .actions { width: 100%; }
+  .actions button { flex: 1 1 auto; }
+  .loading:empty { display: none; }
+  .slate-row.second .field:has(select) { width: 100%; }
+  .field select { width: 100%; max-width: none; padding: 8px; }
+  .readout { width: 100%; }
+  .office-pan { display: block; align-self: stretch; margin: 0 -12px; padding: 6px 12px; overflow-x: auto; }
+  .office-pan .office { width: 760px; max-width: none !important; min-width: 0; }
+  /* Sin esto la tira de la oficina ensancha toda la página. */
+  main { grid-template-columns: minmax(0, 1fr); }
+  .stage-floor { min-width: 0; }
+  .sheet { padding: 16px; }
+  /* Pegado al borde taparía media pantalla: en el teléfono va en su sitio, debajo de la oficina. */
+  .decision { padding: 14px; position: static; }
+}
